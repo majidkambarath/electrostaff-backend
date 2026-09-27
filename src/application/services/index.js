@@ -1,0 +1,21 @@
+// Use-case factories. Each takes its dependencies (repository ports, other services,
+// infrastructure adapters) and returns plain functions — no Express, no Mongoose.
+module.exports = {
+  orgService: require('./orgService'),
+  notificationService: require('./notificationService'),
+  wageService: require('./wageService'),
+  authService: require('./authService'),
+  staffService: require('./staffService'),
+  siteService: require('./siteService'),
+  attendanceService: require('./attendanceService'),
+  paymentService: require('./paymentService'),
+  payrollService: require('./payrollService'),
+  advanceService: require('./advanceService'),
+  leaveService: require('./leaveService'),
+  performanceService: require('./performanceService'),
+  siteMoneyService: require('./siteMoneyService'),
+  requestService: require('./requestService'),
+  reportService: require('./reportService'),
+  dashboardService: require('./dashboardService'),
+  portalService: require('./portalService'),
+};

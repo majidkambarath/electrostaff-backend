@@ -25,34 +25,55 @@ const iso = (offsetDays) => {
 
   const mongoose = require('mongoose');
   await mongoose.connect(process.env.MONGODB_URI);
-  const app = require('../server');
+  const { buildApp } = require('../server');
+  const { buildConfig } = require('../src/config');
+  const app = buildApp({ ...buildConfig(), authRateLimit: 1000, rateLimitPerMinute: 10000 });
   const server = app.listen(0);
   const base = `http://127.0.0.1:${server.address().port}/api`;
-  let orgId = '';
+  let adminToken = '';
 
-  const call = async (method, url, body) => {
+  const call = async (method, url, body, token = adminToken) => {
     const res = await fetch(base + url, {
       method,
-      headers: { 'Content-Type': 'application/json', ...(orgId ? { 'x-organization-id': orgId } : {}) },
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
-    return { status: res.status, data: await res.json().catch(() => null) };
+    const text = await res.text();
+    let data = null;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = text;
+    }
+    return { status: res.status, data, type: res.headers.get('content-type') };
   };
 
   try {
-    console.log('Org');
-    let r = await call('GET', '/org');
-    check(r.status === 200 && r.data.organizationId, 'GET /org returns default org');
-    orgId = r.data.organizationId;
-    r = await call('PUT', '/org', { name: 'Test Electricals', phone: '999' });
-    check(r.data.name === 'Test Electricals', 'PUT /org updates business name');
-    const saved = orgId;
-    orgId = new mongoose.Types.ObjectId().toString();
+    console.log('Auth & setup');
+    let r = await call('GET', '/auth/status');
+    check(r.data.setupRequired === true, 'fresh install needs setup');
     r = await call('GET', '/staff');
-    check(r.status === 400, 'unknown org id is rejected on data routes');
-    r = await call('GET', '/org');
-    check(r.data.organizationId === saved, 'GET /org recovers the default org for a stale id');
-    orgId = saved;
+    check(r.status === 401, 'data routes need sign-in');
+    r = await call('POST', '/auth/setup', { name: 'Owner', phone: '98450 11111', password: 'short' });
+    check(r.status === 400, 'weak password rejected at setup');
+    r = await call('POST', '/auth/setup', { name: 'Owner', phone: '98450 11111', password: 'owner-pass-1', businessName: 'Test Electricals' });
+    check(r.status === 201 && r.data.token && r.data.principal.role === 'owner', 'owner created by setup', r.data);
+    adminToken = r.data.token;
+    r = await call('POST', '/auth/setup', { name: 'X', phone: '9845022222', password: 'another-pass' });
+    check(r.status === 409, 'setup cannot run twice');
+    r = await call('POST', '/auth/login', { phone: '9845011111', password: 'wrong-pass' }, '');
+    check(r.status === 401, 'wrong password -> 401');
+    r = await call('POST', '/auth/login', { phone: { $gt: '' }, password: { $gt: '' } }, '');
+    check(r.status === 400, 'NoSQL operator injection in login is neutralised');
+    r = await call('POST', '/auth/login', { phone: '+91 98450-11111', password: 'owner-pass-1' }, '');
+    check(r.status === 200 && r.data.principal.role === 'owner', 'owner signs in with formatted phone');
+    adminToken = r.data.token;
+    r = await call('GET', '/auth/me');
+    check(r.data.principal.name === 'Owner' && r.data.organization.name === 'Test Electricals', '/auth/me returns owner + business');
+    r = await call('GET', '/staff', null, 'not-a-token');
+    check(r.status === 401, 'bad token rejected');
+    r = await call('PUT', '/org', { name: 'Test Electricals', phone: '999' });
+    check(r.data.name === 'Test Electricals', 'PUT /org updates business');
 
     console.log('Staff');
     r = await call('POST', '/staff', { name: 'Arun', phone: '9000000001', dailyWage: 800, role: 'electrician', joinDate: iso(-30) });
@@ -247,6 +268,89 @@ const iso = (offsetDays) => {
     r = await call('GET', `/payments/${PA}`);
     check(r.data.attendance && r.data.attendance.present >= 3, 'slip includes period attendance summary', r.data.attendance);
 
+    console.log('Staff app: access, sign-in, check-in');
+    r = await call('POST', `/staff/${B}/access`, { password: '123' });
+    check(r.status === 400, 'too-short staff password rejected');
+    r = await call('POST', `/staff/${B}/access`, { generate: true });
+    check(r.status === 200 && r.data.password?.length === 8, 'office grants app access with generated password', r.data);
+    const bPass = r.data.password;
+    r = await call('POST', '/auth/login', { phone: '9000000002', password: bPass }, '');
+    check(r.status === 200 && r.data.principal.role === 'staff' && r.data.principal.mustChangePassword, 'staff signs in (must change password)');
+    let staffToken = r.data.token;
+    r = await call('POST', '/auth/change-password', { currentPassword: bPass, newPassword: 'bala-new-pass' }, staffToken);
+    check(r.status === 200 && r.data.token, 'staff changes password');
+    const oldStaffToken = staffToken;
+    staffToken = r.data.token;
+    r = await call('GET', '/me/home', null, oldStaffToken);
+    check(r.status === 401, 'old session is signed out after password change');
+    r = await call('GET', '/staff', null, staffToken);
+    check(r.status === 403, 'staff cannot open office routes');
+    r = await call('GET', '/me/home', null, adminToken);
+    check(r.status === 403, 'office cannot open staff-only routes');
+    r = await call('GET', '/me/home', null, staffToken);
+    check(r.status === 200 && r.data.staff.name === 'Bala' && r.data.sites.some((x) => x._id === S1), 'staff home shows own sites', r.data);
+    r = await call('GET', '/notifications/unread-count');
+    const unreadBefore = r.data.unread;
+    r = await call('POST', '/me/check-in', { siteId: S1, status: 'present', lat: 13.08, lng: 80.27, accuracy: 12 }, staffToken);
+    check(r.status === 201 && r.data.today.some((t) => t.source === 'staff' && t.checkIn?.lat === 13.08), 'staff checks in with location', r.data);
+    r = await call('GET', `/attendance?siteId=${S1}&date=${iso(0)}`);
+    check(r.data.records.find((x) => x.staff._id === B)?.attendance?.source === 'staff', 'office sees self check-in');
+    r = await call('GET', '/notifications');
+    check(r.data.unread === unreadBefore + 1 && /Bala checked in/.test(r.data.items[0].title), 'office notified of check-in', r.data.items?.[0]);
+    r = await call('POST', '/me/check-in', { siteId: S2, status: 'present' }, staffToken);
+    check(r.status === 400, 'cannot check in at a site you are not assigned to');
+    r = await call('POST', '/me/check-in/undo', { siteId: S1 }, staffToken);
+    check(r.status === 200 && r.data.today.length === 0, 'staff undoes own check-in');
+
+    console.log('Staff app: leave & requests');
+    r = await call('POST', '/me/leaves', { startDate: iso(2), endDate: iso(3), type: 'casual', reason: 'Wedding', status: 'approved' }, staffToken);
+    check(r.status === 201 && r.data.status === 'pending' && r.data.source === 'staff', 'staff leave is always pending', r.data);
+    const LV = r.data._id;
+    r = await call('PUT', `/leaves/${LV}`, { status: 'approved', responseNote: 'Enjoy' });
+    check(r.data.status === 'approved', 'office approves leave');
+    r = await call('GET', '/notifications', null, staffToken);
+    check(r.data.items.some((n) => /leave was approved/.test(n.title)), 'staff notified of leave decision');
+    r = await call('DELETE', `/me/leaves/${LV}`, null, staffToken);
+    check(r.status === 400, 'approved leave cannot be cancelled by staff');
+    r = await call('POST', '/me/requests', { type: 'advance', amount: 700, note: 'School fees' }, staffToken);
+    check(r.status === 201 && r.data.status === 'pending', 'staff requests an advance');
+    const RQ = r.data._id;
+    r = await call('PUT', `/requests/${RQ}`, { status: 'approved', paymentMode: 'upi' });
+    check(r.status === 200 && r.data.advanceId, 'approval records the advance', r.data);
+    r = await call('GET', '/me/advances', null, staffToken);
+    check(r.data.balance === 700, 'staff sees advance balance');
+    r = await call('PUT', `/requests/${RQ}`, { status: 'rejected' });
+    check(r.status === 400, 'decided request cannot be decided again');
+    await call('POST', '/notifications/read', {}, staffToken);
+    r = await call('GET', '/notifications/unread-count', null, staffToken);
+    check(r.data.unread === 0, 'mark all notifications read');
+
+    console.log('UPI proof of payment');
+    await call('PUT', `/staff/${B}`, { upiId: 'bala@okaxis' });
+    r = await call('PUT', `/staff/${B}`, { upiId: 'not a upi' });
+    check(r.status === 400, 'invalid UPI ID rejected');
+    const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    r = await call('POST', '/payments', { staffId: B, periodStart: iso(0), periodEnd: iso(0), markPaid: true, paymentMode: 'upi', proof: 'data:image/png;base64,AAAA' });
+    check(r.status === 400, 'fake image rejected by content check');
+    await call('POST', '/attendance/bulk', { siteId: S1, date: iso(0), records: [{ staffId: B, status: 'present' }] });
+    r = await call('POST', '/payments', { staffId: B, periodStart: iso(0), periodEnd: iso(0), markPaid: true, paymentMode: 'upi', transactionRef: 'UTR123456', proof: png });
+    check(r.status === 201 && r.data.transactionRef === 'UTR123456' && r.data.proofId, 'paid with UTR + screenshot', r.data);
+    const PP = r.data._id;
+    r = await call('GET', `/payments/${PP}/proof`);
+    check(r.status === 200 && r.type === 'image/png', 'office downloads proof', { status: r.status, type: r.type, data: typeof r.data === 'string' ? r.data.slice(0, 80) : r.data });
+    r = await call('GET', `/me/payslips/${PP}/proof`, null, staffToken);
+    check(r.status === 200, 'staff sees proof of own payment');
+    r = await call('GET', `/me/payslips/${PA}`, null, staffToken);
+    check(r.status === 403, "staff cannot open someone else's payslip");
+
+    console.log('Revoking access');
+    r = await call('DELETE', `/staff/${B}/access`);
+    check(r.status === 200, 'office turns off app access');
+    r = await call('GET', '/me/home', null, staffToken);
+    check(r.status === 401 || r.status === 403, 'revoked staff session stops working');
+    r = await call('POST', '/auth/login', { phone: '9000000002', password: 'bala-new-pass' }, '');
+    check(r.status === 401, 'revoked staff cannot sign in');
+
     console.log('Archive rules');
     r = await call('DELETE', `/staff/${A}`);
     check(r.data.archived === true, 'staff with history archived');
@@ -259,6 +363,22 @@ const iso = (offsetDays) => {
     check(r.status === 400, 'cannot assign to completed site');
     r = await call('GET', '/nope');
     check(r.status === 404, 'unknown route -> 404 JSON');
+
+    console.log('Password recovery (command line)');
+    const { spawnSync } = require('child_process');
+    const reset = (...args) =>
+      spawnSync(process.execPath, [require('path').join(__dirname, '../scripts/reset-password.js'), ...args], {
+        env: process.env,
+        encoding: 'utf8',
+      });
+    let cli = reset('9000099999', 'whatever-1');
+    check(cli.status !== 0, 'reset refuses an unknown number');
+    cli = reset('98450 11111', 'owner-reset-1');
+    check(cli.status === 0 && cli.stdout.includes('Password reset for Owner'), 'owner password reset from the CLI', cli.stderr);
+    r = await call('GET', '/auth/me');
+    check(r.status === 401, 'reset signs out existing sessions');
+    r = await call('POST', '/auth/login', { phone: '9845011111', password: 'owner-reset-1' }, '');
+    check(r.status === 200 && r.data.principal.role === 'owner', 'owner signs in with the new password');
   } catch (err) {
     failures += 1;
     console.error('Test crashed:', err);
