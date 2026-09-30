@@ -49,7 +49,7 @@ module.exports = ({ Site, SiteAssignment }) => ({
     listForStaff: async (orgId, staffId) =>
       (
         await SiteAssignment.find({ staffId, active: true, organizationId: orgId })
-          .populate('siteId', 'name status clientName address')
+          .populate('siteId', 'name status clientName address geofence')
           .sort({ assignedDate: -1 })
           .lean()
       ).filter((a) => a.siteId),

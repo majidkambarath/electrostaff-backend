@@ -26,9 +26,25 @@ module.exports = ({ Organization, User, Staff }) => ({
       const { passwordHash, ...rest } = user.toObject();
       return rest;
     },
+    // Own password change / CLI reset: clears the "must change" flag.
     setPassword: (id, passwordHash) =>
-      User.findByIdAndUpdate(id, { passwordHash, $inc: { tokenVersion: 1 } }, { new: true }).lean(),
+      User.findByIdAndUpdate(id, { passwordHash, mustChangePassword: false, $inc: { tokenVersion: 1 } }, { new: true }).lean(),
     touchLogin: (id) => User.updateOne({ _id: id }, { lastLoginAt: new Date() }),
+
+    // Office team of one business
+    listForOrg: (orgId) =>
+      User.find({ organizationId: orgId }).select('name phone role siteIds lastLoginAt createdAt mustChangePassword').sort({ createdAt: 1 }).lean(),
+    findInOrg: (orgId, id) => User.findOne({ _id: id, organizationId: orgId }).lean(),
+    updateInOrg: (orgId, id, set) =>
+      User.findOneAndUpdate({ _id: id, organizationId: orgId }, { $set: set, $inc: { tokenVersion: 1 } }, { new: true, runValidators: true }).lean(),
+    // Password set by the owner: the person must choose their own on next sign-in.
+    setTempPassword: (orgId, id, passwordHash) =>
+      User.findOneAndUpdate(
+        { _id: id, organizationId: orgId },
+        { passwordHash, mustChangePassword: true, $inc: { tokenVersion: 1 } },
+        { new: true }
+      ).lean(),
+    removeInOrg: (orgId, id) => User.deleteOne({ _id: id, organizationId: orgId }),
     // New sign-in number; bumps tokenVersion so every session must sign in again.
     setPhone: (id, phone) =>
       User.findByIdAndUpdate(id, { phone, phoneKey: normalizePhone(phone), $inc: { tokenVersion: 1 } }, { new: true }).lean(),
@@ -53,6 +69,7 @@ module.exports = ({ Organization, User, Staff }) => ({
       toMap(await Staff.find(inOrg(orgId, { _id: { $in: ids } })).select(fields || 'name role phone dailyWage otRate status').lean()),
     listForOrg: (orgId, fields = 'name role status dailyWage otRate') => Staff.find(inOrg(orgId)).select(fields).lean(),
     listActive: (orgId, fields = '_id') => Staff.find(inOrg(orgId, { status: { $ne: 'inactive' } })).select(fields).lean(),
+    countActive: (orgId) => Staff.countDocuments(inOrg(orgId, { status: { $ne: 'inactive' } })),
     phoneTaken: async (orgId, phone, excludeId) => {
       const filter = inOrg(orgId, { phone: phone.trim() });
       if (excludeId) filter._id = { $ne: excludeId };

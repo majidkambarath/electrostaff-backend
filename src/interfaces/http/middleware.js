@@ -43,6 +43,14 @@ const authenticate = (authService) => async (req, res, next) => {
   }
 };
 
+// An expired plan leaves the office read-only: it can look, not change (password and
+// notification settings still work). The staff app keeps working so attendance isn't lost.
+const READ_ONLY_ALLOWED = new Set(['/auth/change-password', '/notifications/read', '/notifications/subscribe', '/notifications/unsubscribe']);
+const readOnlyGuard = (req, res, next) =>
+  req.principal?.readOnly && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !READ_ONLY_ALLOWED.has(req.path)
+    ? next(forbidden('Your plan has ended, so the app is read-only. Contact ElectroStaff to renew.'))
+    : next();
+
 const requireRole = (...roles) => (req, res, next) =>
   roles.includes(req.principal?.role) ? next() : next(forbidden());
 
@@ -74,4 +82,4 @@ const errorHandler = (err, req, res, next) => {
   res.status(status).json({ message: status >= 500 ? 'Something went wrong on the server' : message });
 };
 
-module.exports = { handle, sendFile, authenticate, requireRole, notFound, errorHandler };
+module.exports = { handle, sendFile, authenticate, readOnlyGuard, requireRole, notFound, errorHandler };

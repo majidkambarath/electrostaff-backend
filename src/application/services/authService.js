@@ -1,6 +1,7 @@
 const { normalizePhone, assertPassword } = require('../../domain/credentials');
 const { invalid, unauthorized, forbidden, tooMany, conflict } = require('../../domain/errors');
 const { requireText } = require('../validation');
+const { trialPlan, planStatus } = require('../../domain/plans');
 
 const MAX_FAILURES = 8;
 const WINDOW_MS = 15 * 60 * 1000;
@@ -17,7 +18,7 @@ const SUSPENDED = 'This business account is suspended. Contact ElectroStaff supp
 // access revoked) signs every device out. A login mobile number is unique across the platform.
 module.exports = ({ userRepo, staffRepo, platformAdminRepo, orgRepo, orgService, passwordHasher, tokenService, config = {}, clock = () => Date.now() }) => {
   const failures = new Map(); // phoneKey -> { count, since }
-  const orgStatus = new Map(); // orgId -> { status, at }
+  const orgCache = new Map(); // orgId -> { status, plan, at }
 
   const checkRate = (key) => {
     const entry = failures.get(key);
@@ -32,16 +33,18 @@ module.exports = ({ userRepo, staffRepo, platformAdminRepo, orgRepo, orgService,
   };
 
   // Suspended organizations are locked out; cached briefly so each request doesn't re-read it.
+  // Returns the org's plan status (an expired plan makes the office read-only).
   const assertOrgActive = async (orgId) => {
     const key = String(orgId);
-    let entry = orgStatus.get(key);
+    let entry = orgCache.get(key);
     if (!entry || clock() - entry.at > ORG_STATUS_TTL_MS) {
       const org = await orgRepo.findById(orgId);
-      entry = { status: org ? org.status || 'active' : 'missing', at: clock() };
-      orgStatus.set(key, entry);
+      entry = { status: org ? org.status || 'active' : 'missing', plan: org?.plan, at: clock() };
+      orgCache.set(key, entry);
     }
     if (entry.status === 'missing') throw unauthorized(EXPIRED);
     if (entry.status !== 'active') throw forbidden(SUSPENDED);
+    return planStatus(entry.plan, new Date(clock()));
   };
 
   // One number = one login on the whole platform (office user or staff app).
@@ -52,13 +55,16 @@ module.exports = ({ userRepo, staffRepo, platformAdminRepo, orgRepo, orgService,
     if (await staffRepo.loginTaken(phoneKey, staffId)) throw conflict(msg);
   };
 
-  const userPrincipal = (u) => ({
+  const userPrincipal = (u, plan) => ({
     kind: 'user',
     id: String(u._id),
     role: u.role,
     name: u.name,
     phone: u.phone,
     organizationId: String(u.organizationId),
+    mustChangePassword: Boolean(u.mustChangePassword),
+    ...(u.role === 'supervisor' && { siteIds: (u.siteIds || []).map(String) }),
+    ...(plan?.expired && { readOnly: true }),
   });
   const staffPrincipal = (s) => ({
     kind: 'staff',
@@ -89,7 +95,7 @@ module.exports = ({ userRepo, staffRepo, platformAdminRepo, orgRepo, orgService,
     if (key.length !== 10) throw invalid('Enter a valid 10-digit mobile number');
     assertPassword(password);
     await assertLoginPhoneFree(key, {}, 'This mobile number is already registered. Sign in instead, or use another number.');
-    const org = await orgService.create({ name: businessName, ownerName, phone, email, address });
+    const org = await orgService.create({ name: businessName, ownerName, phone, email, address }, { plan: trialPlan(new Date(clock())) });
     try {
       const user = await userRepo.create({
         name: ownerName,
@@ -109,7 +115,7 @@ module.exports = ({ userRepo, staffRepo, platformAdminRepo, orgRepo, orgService,
     assertLoginPhoneFree,
     createBusiness,
     // Called after the platform portal changes an organization's status.
-    forgetOrgStatus: (orgId) => orgStatus.delete(String(orgId)),
+    forgetOrgStatus: (orgId) => orgCache.delete(String(orgId)),
 
     status: async () => ({ signupEnabled: config.signupEnabled !== false }),
 
@@ -133,10 +139,10 @@ module.exports = ({ userRepo, staffRepo, platformAdminRepo, orgRepo, orgService,
 
       const user = await userRepo.findByPhoneKeyWithSecret(key);
       if (user && (await passwordHasher.verify(password, user.passwordHash))) {
-        await assertOrgActive(user.organizationId);
+        const plan = await assertOrgActive(user.organizationId);
         failures.delete(key);
         userRepo.touchLogin(user._id);
-        return { token: issue('user', user), principal: userPrincipal(user) };
+        return { token: issue('user', user), principal: userPrincipal(user, plan) };
       }
       for (const staff of await staffRepo.findForLogin(key)) {
         if (await passwordHasher.verify(password, staff.passwordHash)) {
@@ -157,8 +163,7 @@ module.exports = ({ userRepo, staffRepo, platformAdminRepo, orgRepo, orgService,
       if (claims.kind === 'user') {
         const user = await userRepo.findById(claims.sub);
         if (!user || (user.tokenVersion || 0) !== claims.v) throw unauthorized(EXPIRED);
-        await assertOrgActive(user.organizationId);
-        return userPrincipal(user);
+        return userPrincipal(user, await assertOrgActive(user.organizationId));
       }
       if (claims.kind === 'staff') {
         const staff = await staffRepo.findAuthById(claims.sub);

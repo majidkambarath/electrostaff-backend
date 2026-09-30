@@ -46,5 +46,7 @@ module.exports = ({ PlatformAdmin, Organization, User, Staff, Site, Payment }) =
     },
     usersOf: (orgId) => User.find({ organizationId: orgId }).select('name phone role lastLoginAt createdAt').sort({ createdAt: 1 }).lean(),
     setOrgStatus: (orgId, status) => Organization.findByIdAndUpdate(orgId, { status }, { new: true, runValidators: true }).lean(),
+    setOrgPlan: (orgId, plan) =>
+      Organization.findByIdAndUpdate(orgId, plan ? { plan } : { $unset: { plan: 1 } }, { new: true, runValidators: true }).lean(),
   },
 });

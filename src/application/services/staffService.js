@@ -1,5 +1,6 @@
 const { pick, requireId } = require('../validation');
-const { notFound, conflict, invalid } = require('../../domain/errors');
+const { notFound, conflict, invalid, forbidden } = require('../../domain/errors');
+const { planStatus } = require('../../domain/plans');
 const { assertPassword, generatePassword, normalizePhone } = require('../../domain/credentials');
 const { assertUpiId } = require('../../domain/files');
 
@@ -7,7 +8,18 @@ const STAFF_FIELDS = ['name', 'email', 'phone', 'address', 'role', 'dailyWage', 
 // Fields never sent to the office UI.
 const publicStaff = ({ passwordHash, tokenVersion, ...rest }) => rest;
 
-module.exports = ({ staffRepo, assignmentRepo, attendanceRepo, paymentRepo, advanceRepo, wageService, passwordHasher, authService }) => {
+const MAX_IMPORT = 500;
+
+module.exports = ({ staffRepo, orgRepo, assignmentRepo, attendanceRepo, paymentRepo, advanceRepo, wageService, passwordHasher, authService }) => {
+  // The plan's active-staff limit (businesses without a plan have none).
+  const assertStaffRoom = async (orgId, adding = 1) => {
+    const { staffLimit, label } = planStatus((await orgRepo.findById(orgId))?.plan);
+    if (!staffLimit) return;
+    if ((await staffRepo.countActive(orgId)) + adding > staffLimit) {
+      throw forbidden(`Your ${label} plan allows ${staffLimit} active staff. Archive someone or upgrade the plan.`);
+    }
+  };
+
   // A staff-app login number must be free on the whole platform (any business, any account kind).
   const assertLoginFree = (phone, staffId) =>
     authService.assertLoginPhoneFree(normalizePhone(phone), { staffId }, 'This number already signs in to ElectroStaff (maybe with another business). Use a different number for the staff app.');
@@ -53,6 +65,7 @@ module.exports = ({ staffRepo, assignmentRepo, attendanceRepo, paymentRepo, adva
       splitOtRate(body);
       assertUpiId(body.upiId);
       await assertUniquePhone(orgId, body.phone);
+      if (body.status !== 'inactive') await assertStaffRoom(orgId);
       return publicStaff(await staffRepo.create(orgId, body));
     },
 
@@ -62,13 +75,37 @@ module.exports = ({ staffRepo, assignmentRepo, attendanceRepo, paymentRepo, adva
       const clearOt = splitOtRate(body);
       assertUpiId(body.upiId);
       await assertUniquePhone(orgId, body.phone, id);
-      if (body.phone) {
-        const current = await staffRepo.findById(orgId, id);
-        if (current?.portalEnabled && normalizePhone(current.phone) !== normalizePhone(body.phone)) await assertLoginFree(body.phone, id);
-      }
+      const current = await staffRepo.findById(orgId, id);
+      if (body.phone && current?.portalEnabled && normalizePhone(current.phone) !== normalizePhone(body.phone)) await assertLoginFree(body.phone, id);
+      if (current?.status === 'inactive' && body.status && body.status !== 'inactive') await assertStaffRoom(orgId);
       const staff = await staffRepo.update(orgId, id, body, clearOt ? { otRate: 1 } : {});
       if (!staff) throw notFound('Staff');
       return publicStaff(staff);
+    },
+
+    // Bulk add from a pasted sheet / CSV. Each row goes through the same checks as a single add;
+    // bad rows are reported, good rows are saved.
+    importMany: async (orgId, rows) => {
+      if (!Array.isArray(rows) || rows.length === 0) throw invalid('Nothing to import');
+      if (rows.length > MAX_IMPORT) throw invalid(`Import at most ${MAX_IMPORT} rows at a time`);
+      const created = [];
+      const skipped = [];
+      for (const [i, row] of rows.entries()) {
+        try {
+          const body = pick(row || {}, STAFF_FIELDS);
+          if (!String(body.name || '').trim()) throw invalid('Name is missing');
+          if (normalizePhone(body.phone).length !== 10) throw invalid('Needs a 10-digit mobile number');
+          body.phone = normalizePhone(body.phone);
+          splitOtRate(body);
+          assertUpiId(body.upiId);
+          await assertUniquePhone(orgId, body.phone);
+          if (body.status !== 'inactive') await assertStaffRoom(orgId);
+          created.push(publicStaff(await staffRepo.create(orgId, body)));
+        } catch (err) {
+          skipped.push({ row: i + 1, name: row?.name || '', reason: err.message });
+        }
+      }
+      return { created: created.length, skipped };
     },
 
     // Staff with attendance, payments or advances are archived (inactive) so wage history stays intact.

@@ -2,6 +2,8 @@ const { requireId } = require('../validation');
 const { invalid, notFound } = require('../../domain/errors');
 const { generatePassword } = require('../../domain/credentials');
 const { ORG_STATUSES } = require('../../domain/organizations');
+const { PLANS, planStatus } = require('../../domain/plans');
+const { requireDay } = require('../../domain/dates');
 
 // The platform portal: operators of the SaaS see every business, create new ones and can
 // suspend them. It never reads a business's wage records — only headline counts.
@@ -15,6 +17,7 @@ module.exports = ({ platformRepo, authService }) => {
     email: org.email,
     address: org.address,
     createdAt: org.createdAt,
+    plan: planStatus(org.plan),
     owner: owner ? { name: owner.name, phone: owner.phone, lastLoginAt: owner.lastLoginAt || null } : null,
     counts,
   });
@@ -63,6 +66,25 @@ module.exports = ({ platformRepo, authService }) => {
         owner: { name: user.name, phone: user.phone },
         password,
       };
+    },
+
+    // plan: { name, staffLimit?, validUntil? (YYYY-MM-DD) } or { name: null } to remove limits.
+    setPlan: async (id, input = {}) => {
+      requireId(id, 'organization id');
+      let plan = null;
+      if (input.name) {
+        if (!PLANS[input.name]) throw invalid(`Plan must be one of ${Object.keys(PLANS).join(', ')}`);
+        const limit = input.staffLimit === '' || input.staffLimit === undefined || input.staffLimit === null
+          ? PLANS[input.name].staffLimit
+          : Math.round(Number(input.staffLimit));
+        if (limit !== null && !(Number.isFinite(limit) && limit >= 1 && limit <= 100000)) throw invalid('Staff limit must be a positive number');
+        plan = { name: input.name, staffLimit: limit, validUntil: input.validUntil ? requireDay(input.validUntil, 'validUntil') : null };
+        if (plan.validUntil) plan.validUntil.setHours(23, 59, 59, 999);
+      }
+      const org = await platformRepo.setOrgPlan(id, plan);
+      if (!org) throw notFound('Organization');
+      authService.forgetOrgStatus(id);
+      return { id: String(org._id), plan: planStatus(org.plan) };
     },
 
     setStatus: async (id, status) => {

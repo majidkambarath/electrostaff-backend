@@ -3,6 +3,10 @@ const { notFound, invalid } = require('../../domain/errors');
 const { startOfDay, addDays, dayKey } = require('../../domain/dates');
 const { siteAmount } = require('../../domain/wages');
 const { financeSummary } = require('../../domain/finance');
+const { parseGeofence } = require('../../domain/geo');
+
+// Check-in fence: { lat, lng, radius } sets it, null clears it, absent leaves it as is.
+const withFence = (body, input) => (input && 'geofence' in input ? { ...body, geofence: parseGeofence(input.geofence) } : body);
 
 const SITE_FIELDS = ['name', 'address', 'clientName', 'clientPhone', 'startDate', 'endDate', 'status', 'notes', 'contractValue'];
 
@@ -49,11 +53,11 @@ module.exports = ({ siteRepo, assignmentRepo, attendanceRepo, staffRepo, expense
       return { ...site, staffCount: await assignmentRepo.countActiveForSite(orgId, site._id) };
     },
 
-    create: (orgId, input) => siteRepo.create(orgId, pick(input, SITE_FIELDS)),
+    create: (orgId, input) => siteRepo.create(orgId, withFence(pick(input, SITE_FIELDS), input)),
 
     update: async (orgId, id, input) => {
       requireId(id, 'site id');
-      const body = pick(input, SITE_FIELDS);
+      const body = withFence(pick(input, SITE_FIELDS), input);
       if (body.endDate === '') body.endDate = null;
       const site = await siteRepo.update(orgId, id, body);
       if (!site) throw notFound('Site');

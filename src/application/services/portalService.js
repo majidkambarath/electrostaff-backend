@@ -3,6 +3,7 @@ const { invalid, notFound, conflict } = require('../../domain/errors');
 const { startOfDay, endOfDay, dayKey } = require('../../domain/dates');
 const { otRateOf, netAmountOf } = require('../../domain/wages');
 const { summarize } = require('../../domain/attendance');
+const { checkFence, formatDistance } = require('../../domain/geo');
 
 const STATUS_LABEL = { present: 'Present', half: 'Half day' };
 const clockTime = (d) => new Date(d).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
@@ -19,7 +20,13 @@ module.exports = ({ staffRepo, assignmentRepo, attendanceRepo, paymentRepo, adva
   const activeSitesFor = async (orgId, staffId) =>
     (await assignmentRepo.listForStaff(orgId, staffId))
       .filter((a) => a.siteId.status === 'active')
-      .map((a) => ({ _id: a.siteId._id, name: a.siteId.name, clientName: a.siteId.clientName, address: a.siteId.address }));
+      .map((a) => ({
+        _id: a.siteId._id,
+        name: a.siteId.name,
+        clientName: a.siteId.clientName,
+        address: a.siteId.address,
+        geofence: a.siteId.geofence?.lat !== undefined ? a.siteId.geofence : null,
+      }));
 
   const todayRecords = async (orgId, staffId) =>
     (await attendanceRepo.forStaffDay(orgId, staffId, startOfDay(new Date()))).map((r) => ({
@@ -94,6 +101,12 @@ module.exports = ({ staffRepo, assignmentRepo, attendanceRepo, paymentRepo, adva
 
       const at = new Date();
       const location = lat !== undefined && lng !== undefined ? validLocation({ lat, lng, accuracy }) : null;
+      if (site.geofence) {
+        if (!location) throw invalid(`${site.name} needs your location to check in. Turn on location and try again.`);
+        const { inside, distance } = checkFence(site.geofence, location);
+        if (!inside) throw invalid(`You are ${formatDistance(distance)} away from ${site.name}. Check in when you reach the site.`);
+        location.distance = distance;
+      }
       const result = await attendanceService.save(
         orgId,
         siteId,

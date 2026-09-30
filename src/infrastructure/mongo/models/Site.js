@@ -16,6 +16,11 @@ const siteSchema = new mongoose.Schema(
       default: 'active',
     },
     notes: { type: String, trim: true },
+    // Staff-app check-ins must be within `radius` metres of this point (when set).
+    geofence: {
+      type: new mongoose.Schema({ lat: Number, lng: Number, radius: { type: Number, default: 200 } }, { _id: false }),
+      default: undefined,
+    },
     organizationId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Organization',
