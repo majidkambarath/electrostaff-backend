@@ -27,6 +27,9 @@ module.exports = ({ Organization, User, Staff }) => ({
     setPassword: (id, passwordHash) =>
       User.findByIdAndUpdate(id, { passwordHash, $inc: { tokenVersion: 1 } }, { new: true }).lean(),
     touchLogin: (id) => User.updateOne({ _id: id }, { lastLoginAt: new Date() }),
+    // New sign-in number; bumps tokenVersion so every session must sign in again.
+    setPhone: (id, phone) =>
+      User.findByIdAndUpdate(id, { phone, phoneKey: normalizePhone(phone), $inc: { tokenVersion: 1 } }, { new: true }).lean(),
   },
 
   staffRepo: {

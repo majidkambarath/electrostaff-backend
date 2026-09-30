@@ -379,6 +379,17 @@ const iso = (offsetDays) => {
     check(r.status === 401, 'reset signs out existing sessions');
     r = await call('POST', '/auth/login', { phone: '9845011111', password: 'owner-reset-1' }, '');
     check(r.status === 200 && r.data.principal.role === 'owner', 'owner signs in with the new password');
+    adminToken = r.data.token;
+    r = await call('POST', '/staff', { name: 'Login Holder', phone: '9000000077', dailyWage: 500 });
+    await call('POST', `/staff/${r.data._id}/access`, { generate: true });
+    cli = reset('98450 11111', 'owner-reset-2', '9000000077');
+    check(cli.status !== 0, 'cannot move owner onto a staff login number');
+    cli = reset('98450 11111', 'owner-reset-2', '9845022222');
+    check(cli.status === 0 && cli.stdout.includes('Sign in with 9845022222'), 'owner moved to a new mobile number', cli.stderr);
+    r = await call('POST', '/auth/login', { phone: '9845011111', password: 'owner-reset-2' }, '');
+    check(r.status === 401, 'old number no longer signs in');
+    r = await call('POST', '/auth/login', { phone: '9845022222', password: 'owner-reset-2' }, '');
+    check(r.status === 200 && r.data.principal.role === 'owner', 'owner signs in with the new number');
   } catch (err) {
     failures += 1;
     console.error('Test crashed:', err);

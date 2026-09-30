@@ -121,14 +121,26 @@ module.exports = ({ userRepo, staffRepo, orgService, passwordHasher, tokenServic
 
     // Recovery for a forgotten office password. Only reachable from the server's command line
     // (scripts/reset-password.js), never over HTTP. Signs the account out everywhere.
-    resetOfficePassword: async (phone, newPassword) => {
+    // Optionally moves the account to a new mobile number (its sign-in ID).
+    resetOfficePassword: async (phone, newPassword, newPhone) => {
       const key = normalizePhone(phone);
       assertPassword(newPassword);
       const user = await userRepo.findByPhoneKeyWithSecret(key);
       if (!user) throw invalid(`No owner/admin account uses the mobile number ${phone}`);
+      let phoneNow = user.phone;
+      if (newPhone) {
+        const newKey = normalizePhone(newPhone);
+        if (newKey.length !== 10) throw invalid('Enter a valid 10-digit new mobile number');
+        if (newKey !== key) {
+          if (await userRepo.findByPhoneKeyWithSecret(newKey)) throw conflict(`Another office account already uses ${newPhone}`);
+          if ((await staffRepo.findForLogin(newKey)).length) throw conflict(`A staff member signs in with ${newPhone}; pick another number`);
+          await userRepo.setPhone(user._id, newKey);
+          phoneNow = newKey;
+        }
+      }
       await userRepo.setPassword(user._id, await passwordHasher.hash(newPassword));
       failures.delete(key);
-      return { name: user.name, role: user.role };
+      return { name: user.name, role: user.role, phone: phoneNow };
     },
   };
 };
