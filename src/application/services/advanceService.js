@@ -8,7 +8,7 @@ module.exports = ({ advanceRepo, staffRepo, wageService, notificationService }) 
   // Per-staff advance totals: given, recovered through payments, outstanding balance.
   balances: async (orgId) => {
     const balances = await wageService.advanceBalances(orgId);
-    const staff = await staffRepo.findByIds([...balances.keys()], 'name role phone');
+    const staff = await staffRepo.findByIds(orgId, [...balances.keys()], 'name role phone');
     return staff.map((s) => ({ staff: s, ...balances.get(String(s._id)) })).sort((a, b) => b.balance - a.balance);
   },
 
@@ -42,7 +42,7 @@ module.exports = ({ advanceRepo, staffRepo, wageService, notificationService }) 
     if (balance - advance.amount < 0) {
       throw invalid('Part of this advance was already recovered in a payment, so it cannot be deleted');
     }
-    await advanceRepo.remove(advance._id);
+    await advanceRepo.remove(orgId, advance._id);
     return { message: 'Advance deleted' };
   },
 });

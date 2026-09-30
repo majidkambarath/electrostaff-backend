@@ -27,7 +27,7 @@ module.exports = ({ payrollRunRepo, paymentRepo, attendanceRepo, staffRepo, orgR
       sites.set(key, site);
     }
 
-    const staffDocs = await staffRepo.findByIds([...byStaff.keys()], 'name role phone dailyWage otRate status');
+    const staffDocs = await staffRepo.findByIds(orgId, [...byStaff.keys()], 'name role phone dailyWage otRate status');
     const overlapMap = new Map(overlapping.map((p) => [String(p.staffId), p]));
     const rows = staffDocs
       .map((staff) => {
@@ -94,7 +94,7 @@ module.exports = ({ payrollRunRepo, paymentRepo, attendanceRepo, staffRepo, orgR
     }
 
     if (created.length === 0) {
-      await payrollRunRepo.remove(run._id);
+      await payrollRunRepo.remove(orgId, run._id);
       throw invalid(`No payments were created. ${skipped.map((s) => `${s.name}: ${s.reason}`).join(' · ')}`);
     }
     if (markPaid) created.forEach((p) => paymentService.notifyPaid(orgId, p));
@@ -136,9 +136,9 @@ module.exports = ({ payrollRunRepo, paymentRepo, attendanceRepo, staffRepo, orgR
   cancel: async (orgId, id) => {
     const run = await payrollRunRepo.findById(orgId, id);
     if (!run) throw notFound('Payroll run');
-    if (await paymentRepo.runHasPaid(run._id)) throw invalid('This payroll has paid payments and cannot be cancelled');
+    if (await paymentRepo.runHasPaid(orgId, run._id)) throw invalid('This payroll has paid payments and cannot be cancelled');
     await paymentRepo.removeRun(orgId, run._id);
-    await payrollRunRepo.remove(run._id);
+    await payrollRunRepo.remove(orgId, run._id);
     return { message: 'Payroll cancelled' };
   },
 });

@@ -55,8 +55,8 @@ module.exports = ({ notificationRepo, pushRepo, pushNotifier }) => {
       });
       return { ok: true };
     },
-    unsubscribe: async (endpoint) => {
-      if (endpoint) await pushRepo.removeEndpoint(endpoint);
+    unsubscribe: async (principal, endpoint) => {
+      if (endpoint) await pushRepo.removeEndpoint(principal.organizationId, recipientOf(principal), endpoint);
       return { ok: true };
     },
   };

@@ -19,6 +19,7 @@ const attendanceSchema = new mongoose.Schema(
       lat: { type: Number },
       lng: { type: Number },
       accuracy: { type: Number },
+      distance: { type: Number }, // metres from the site's geofence centre
     },
     organizationId: {
       type: mongoose.Schema.Types.ObjectId,

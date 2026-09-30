@@ -1,5 +1,6 @@
 const express = require('express');
-const { handle, sendFile, authenticate, requireRole } = require('./middleware');
+const { handle, sendFile, authenticate, readOnlyGuard, requireRole } = require('./middleware');
+const { forbidden } = require('../../domain/errors');
 
 // HTTP adapter: maps routes to use cases. Handlers only translate request -> command and
 // never contain business rules.
@@ -10,23 +11,39 @@ module.exports = (s) => {
   // ---- Public ------------------------------------------------------------
   api.get('/health', (req, res) => res.json({ status: 'ok', message: 'Electro Staff API running' }));
   api.get('/auth/status', handle(() => s.authService.status()));
-  api.post('/auth/setup', handle((req) => s.authService.setup(req.body), created));
+  api.post('/auth/signup', handle((req) => s.authService.signup(req.body), created));
   api.post('/auth/login', handle((req) => s.authService.login(req.body)));
+  api.post('/auth/developer-login', handle((req) => s.authService.platformLogin(req.body)));
 
   // ---- Any signed-in user -------------------------------------------------
   api.use(authenticate(s.authService));
+  api.use(readOnlyGuard);
   api.get('/auth/me', handle(async (req) => ({
     principal: req.principal,
-    organization: await s.orgService.get(req.orgId),
+    organization: req.orgId ? await s.orgService.get(req.orgId) : null,
   })));
   api.post('/auth/change-password', handle((req) => s.authService.changePassword(req.principal, req.body)));
+
+  // ---- Platform portal (SaaS operators) ------------------------------------
+  const platform = express.Router();
+  platform.use(requireRole('platform'));
+  platform.get('/overview', handle(() => s.platformService.overview()));
+  platform.get('/organizations', handle(() => s.platformService.list()));
+  platform.post('/organizations', handle((req) => s.platformService.create(req.body), created));
+  platform.get('/organizations/:id', handle((req) => s.platformService.get(req.params.id)));
+  platform.put('/organizations/:id/status', handle((req) => s.platformService.setStatus(req.params.id, req.body.status)));
+  platform.put('/organizations/:id/plan', handle((req) => s.platformService.setPlan(req.params.id, req.body)));
+  api.use('/platform', platform);
+
+  // Everything below belongs to one organization; platform operators have none.
+  api.use(requireRole('owner', 'admin', 'supervisor', 'staff'));
 
   api.get('/notifications', handle((req) => s.notificationService.list(req.principal)));
   api.get('/notifications/unread-count', handle((req) => s.notificationService.unreadCount(req.principal)));
   api.post('/notifications/read', handle((req) => s.notificationService.markRead(req.principal, req.body.ids)));
   api.get('/notifications/push-key', handle(() => s.notificationService.pushKey()));
   api.post('/notifications/subscribe', handle((req) => s.notificationService.subscribe(req.principal, req.body.subscription)));
-  api.post('/notifications/unsubscribe', handle((req) => s.notificationService.unsubscribe(req.body.endpoint)));
+  api.post('/notifications/unsubscribe', handle((req) => s.notificationService.unsubscribe(req.principal, req.body.endpoint)));
 
   // ---- Staff app (/me) ----------------------------------------------------
   const me = express.Router();
@@ -47,24 +64,50 @@ module.exports = (s) => {
   me.post('/requests/:id/cancel', handle((req) => s.portalService.cancelRequest(req.principal, req.params.id)));
   api.use('/me', me);
 
+  const org = (req) => req.orgId;
+
+  // ---- Site attendance: owner / admin, and supervisors for their own sites ----
+  const field = express.Router();
+  field.use(requireRole('owner', 'admin', 'supervisor'));
+  const isSupervisor = (req) => req.principal.role === 'supervisor';
+  const mySite = (req, siteId) => {
+    if (isSupervisor(req) && !req.principal.siteIds.includes(String(siteId))) throw forbidden('You can only open your own sites');
+    return siteId;
+  };
+  field.get('/sites', handle(async (req) => {
+    const sites = await s.siteService.list(org(req));
+    if (!isSupervisor(req)) return sites;
+    return sites
+      .filter((x) => req.principal.siteIds.includes(String(x._id)))
+      .map(({ _id, name, address, clientName, status, staffCount }) => ({ _id, name, address, clientName, status, staffCount }));
+  }));
+  field.get('/attendance', handle((req) => s.attendanceService.siteDay(org(req), mySite(req, req.query.siteId), req.query.date)));
+  field.post('/attendance', handle((req) => s.attendanceService.markOne(org(req), { ...req.body, siteId: mySite(req, req.body.siteId) }), created));
+  field.post('/attendance/bulk', handle((req) => s.attendanceService.bulk(org(req), { ...req.body, siteId: mySite(req, req.body.siteId) }), created));
+  api.use(field);
+
   // ---- Office (owner / admin) ----------------------------------------------
   const office = express.Router();
   office.use(requireRole('owner', 'admin'));
-  const org = (req) => req.orgId;
 
   office.get('/org', handle((req) => s.orgService.get(org(req))));
   office.put('/org', handle((req) => s.orgService.update(org(req), req.body)));
+  office.get('/team', handle((req) => s.teamService.list(org(req))));
+  office.post('/team', handle((req) => s.teamService.create(org(req), req.principal, req.body), created));
+  office.put('/team/:id', handle((req) => s.teamService.update(org(req), req.principal, req.params.id, req.body)));
+  office.post('/team/:id/reset-password', handle((req) => s.teamService.resetPassword(org(req), req.principal, req.params.id)));
+  office.delete('/team/:id', handle((req) => s.teamService.remove(org(req), req.principal, req.params.id)));
   office.get('/dashboard', handle((req) => s.dashboardService.get(org(req))));
 
   office.get('/staff', handle((req) => s.staffService.list(org(req), req.query)));
   office.post('/staff', handle((req) => s.staffService.create(org(req), req.body), created));
+  office.post('/staff/import', handle((req) => s.staffService.importMany(org(req), req.body.rows), created));
   office.get('/staff/:id', handle((req) => s.staffService.get(org(req), req.params.id)));
   office.put('/staff/:id', handle((req) => s.staffService.update(org(req), req.params.id, req.body)));
   office.delete('/staff/:id', handle((req) => s.staffService.remove(org(req), req.params.id)));
   office.post('/staff/:id/access', handle((req) => s.staffService.grantAccess(org(req), req.params.id, req.body)));
   office.delete('/staff/:id/access', handle((req) => s.staffService.revokeAccess(org(req), req.params.id)));
 
-  office.get('/sites', handle((req) => s.siteService.list(org(req))));
   office.post('/sites', handle((req) => s.siteService.create(org(req), req.body), created));
   office.get('/sites/:id', handle((req) => s.siteService.get(org(req), req.params.id)));
   office.put('/sites/:id', handle((req) => s.siteService.update(org(req), req.params.id, req.body)));
@@ -75,9 +118,6 @@ module.exports = (s) => {
   office.post('/sites/:id/assign', handle((req) => s.siteService.assign(org(req), req.params.id, req.body), created));
   office.delete('/sites/:id/assign/:staffId', handle((req) => s.siteService.unassign(org(req), req.params.id, req.params.staffId)));
 
-  office.get('/attendance', handle((req) => s.attendanceService.siteDay(org(req), req.query.siteId, req.query.date)));
-  office.post('/attendance', handle((req) => s.attendanceService.markOne(org(req), req.body), created));
-  office.post('/attendance/bulk', handle((req) => s.attendanceService.bulk(org(req), req.body), created));
   office.get('/attendance/staff/:staffId', handle((req) => s.attendanceService.staffHistory(org(req), req.params.staffId, req.query)));
 
   office.get('/payments', handle((req) => s.paymentService.list(org(req), req.query)));
@@ -123,6 +163,7 @@ module.exports = (s) => {
   office.delete('/performance/:id', handle((req) => s.performanceService.remove(org(req), req.params.id)));
 
   office.get('/reports/summary', handle((req) => s.reportService.summary(org(req), req.query)));
+  office.get('/reports/staff', handle((req) => s.reportService.staff(org(req), req.query)));
   office.get('/reports/muster', handle((req) => s.reportService.muster(org(req), req.query)));
 
   api.use(office);

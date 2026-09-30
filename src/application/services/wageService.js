@@ -86,7 +86,7 @@ module.exports = ({ attendanceRepo, paymentRepo, advanceRepo, staffRepo }) => {
   // Labour cost from attendance per site: Map siteId -> { cost, personDays, otHours, staff: Set }.
   const labourCostBySite = async (orgId, range = {}) => {
     const groups = await attendanceRepo.payableGroups(orgId, range);
-    const staffMap = await staffRepo.mapByIds([...new Set(groups.map((g) => String(g._id.staffId)))], 'dailyWage otRate');
+    const staffMap = await staffRepo.mapByIds(orgId, [...new Set(groups.map((g) => String(g._id.staffId)))], 'dailyWage otRate');
     const result = new Map();
     for (const g of groups) {
       const sid = String(g._id.siteId);
@@ -127,7 +127,7 @@ module.exports = ({ attendanceRepo, paymentRepo, advanceRepo, staffRepo }) => {
     if (byStaff.size === 0) return [];
 
     const [staffMap, balances] = await Promise.all([
-      staffRepo.mapByIds([...byStaff.keys()], 'name role phone dailyWage otRate status'),
+      staffRepo.mapByIds(orgId, [...byStaff.keys()], 'name role phone dailyWage otRate status'),
       advanceBalances(orgId, staffId),
     ]);
 

@@ -21,7 +21,7 @@ module.exports = ({ Notification, PushSubscription }) => ({
   pushRepo: {
     save: (sub) =>
       PushSubscription.findOneAndUpdate({ endpoint: sub.endpoint }, sub, { upsert: true, new: true, runValidators: true }).lean(),
-    removeEndpoint: (endpoint) => PushSubscription.deleteOne({ endpoint }),
+    removeEndpoint: (orgId, recipient, endpoint) => PushSubscription.deleteOne({ ...recipientFilter(orgId, recipient), endpoint }),
     removeEndpoints: (endpoints) => PushSubscription.deleteMany({ endpoint: { $in: endpoints } }),
     forRecipient: (orgId, recipient) => PushSubscription.find(recipientFilter(orgId, recipient)).lean(),
   },

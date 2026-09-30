@@ -23,6 +23,7 @@ module.exports = ({ attendanceRepo, assignmentRepo, siteRepo, leaveRepo, payment
   const siteDay = async (orgId, siteId, date) => {
     requireId(siteId, 'siteId');
     const day = requireDay(date, 'date');
+    if (!(await siteRepo.exists(orgId, siteId))) throw notFound('Site');
     const assigned = await assignmentRepo.listForSite(orgId, siteId, 'name phone role dailyWage status');
     const staffIds = assigned.map((a) => a.staffId._id);
 

@@ -1,4 +1,4 @@
-const { orgOrLegacy, oid, toMap } = require('./helpers');
+const { inOrg, oid, toMap } = require('./helpers');
 
 const LEAVE_POPULATE = { path: 'staff', select: 'name phone role dailyWage' };
 
@@ -6,20 +6,20 @@ const LEAVE_POPULATE = { path: 'staff', select: 'name phone role dailyWage' };
 module.exports = ({ Leave, Performance, StaffRequest }) => ({
   leaveRepo: {
     list: async (orgId, { staffId, status } = {}) => {
-      const filter = orgOrLegacy(orgId);
+      const filter = inOrg(orgId);
       if (staffId) filter.staff = staffId;
       if (status) filter.status = status;
       return (await Leave.find(filter).populate(LEAVE_POPULATE).sort({ createdAt: -1 }).lean()).filter((l) => l.staff);
     },
-    findById: (orgId, id) => Leave.findOne(orgOrLegacy(orgId, { _id: id })).lean(),
+    findById: (orgId, id) => Leave.findOne(inOrg(orgId, { _id: id })).lean(),
     create: async (data) => (await (await Leave.create(data)).populate(LEAVE_POPULATE)).toObject(),
     update: (orgId, id, set) =>
-      Leave.findOneAndUpdate(orgOrLegacy(orgId, { _id: id }), set, { new: true, runValidators: true }).populate(LEAVE_POPULATE).lean(),
-    remove: (orgId, id) => Leave.findOneAndDelete(orgOrLegacy(orgId, { _id: id })).lean(),
+      Leave.findOneAndUpdate(inOrg(orgId, { _id: id }), set, { new: true, runValidators: true }).populate(LEAVE_POPULATE).lean(),
+    remove: (orgId, id) => Leave.findOneAndDelete(inOrg(orgId, { _id: id })).lean(),
     approvedTypesForDay: async (orgId, staffIds, dayStart, dayEnd) =>
       toMap(
         await Leave.find(
-          orgOrLegacy(orgId, { staff: { $in: staffIds }, status: 'approved', startDate: { $lte: dayEnd }, endDate: { $gte: dayStart } })
+          inOrg(orgId, { staff: { $in: staffIds }, status: 'approved', startDate: { $lte: dayEnd }, endDate: { $gte: dayStart } })
         )
           .select('staff type')
           .lean(),
@@ -27,14 +27,14 @@ module.exports = ({ Leave, Performance, StaffRequest }) => ({
         (l) => l.type
       ),
     pending: async (orgId) =>
-      (await Leave.find(orgOrLegacy(orgId, { status: 'pending' })).populate('staff', 'name role').sort({ startDate: 1 }).lean()).filter(
+      (await Leave.find(inOrg(orgId, { status: 'pending' })).populate('staff', 'name role').sort({ startDate: 1 }).lean()).filter(
         (l) => l.staff
       ),
   },
 
   performanceRepo: {
     list: async (orgId, { staffId, month, year } = {}) => {
-      const filter = orgOrLegacy(orgId);
+      const filter = inOrg(orgId);
       if (staffId) filter.staff = staffId;
       if (month) filter.month = month;
       if (year) filter.year = year;
@@ -42,14 +42,18 @@ module.exports = ({ Leave, Performance, StaffRequest }) => ({
         (r) => r.staff
       );
     },
-    upsert: (staff, month, year, data) =>
-      Performance.findOneAndUpdate({ staff, month, year }, { ...data, staff, month, year }, { new: true, upsert: true, runValidators: true })
+    upsert: (orgId, staff, month, year, data) =>
+      Performance.findOneAndUpdate(
+        { staff, month, year, organizationId: orgId },
+        { ...data, staff, month, year, organizationId: orgId },
+        { new: true, upsert: true, runValidators: true }
+      )
         .populate('staff', 'name phone role')
         .lean(),
-    remove: (orgId, id) => Performance.findOneAndDelete(orgOrLegacy(orgId, { _id: id })).lean(),
+    remove: (orgId, id) => Performance.findOneAndDelete(inOrg(orgId, { _id: id })).lean(),
     top: async (orgId, month, year, limit = 5) =>
       (
-        await Performance.find(orgOrLegacy(orgId, { month, year }))
+        await Performance.find(inOrg(orgId, { month, year }))
           .populate('staff', 'name role')
           .sort({ rating: -1, tasksCompleted: -1 })
           .limit(limit)

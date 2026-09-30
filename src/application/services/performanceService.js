@@ -28,7 +28,7 @@ module.exports = ({ performanceRepo, staffRepo, attendanceRepo }) => ({
     requireId(input.staff, 'staff');
     if (!input.month || !input.year) throw invalid('month and year are required');
     if (!(await staffRepo.findById(orgId, input.staff))) throw notFound('Staff');
-    return performanceRepo.upsert(input.staff, Number(input.month), Number(input.year), {
+    return performanceRepo.upsert(orgId, input.staff, Number(input.month), Number(input.year), {
       ...pick(input, FIELDS),
       organizationId: orgId,
     });

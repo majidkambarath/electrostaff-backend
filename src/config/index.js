@@ -49,7 +49,9 @@ const buildConfig = (env = process.env) => {
   return {
     port: Number(env.PORT) || 5000,
     mongoUri: env.MONGODB_URI,
-    defaultOrganizationId: env.DEFAULT_ORGANIZATION_ID || null,
+    // Public "Create your business" sign-up; off unless SIGNUP_ENABLED=true. Businesses are
+    // normally created by a developer in developer mode.
+    signupEnabled: env.SIGNUP_ENABLED === 'true',
     jwtSecret: env.JWT_SECRET || secrets.jwtSecret,
     tokenTtl: env.TOKEN_TTL || '30d',
     // Comma-separated list of allowed browser origins (empty = allow any, e.g. dev over LAN).

@@ -29,6 +29,8 @@ const buildContainer = (config) => {
   c.reportService = services.reportService(c);
   c.dashboardService = services.dashboardService(c);
   c.portalService = services.portalService(c);
+  c.platformService = services.platformService(c);
+  c.teamService = services.teamService(c);
   return c;
 };
 

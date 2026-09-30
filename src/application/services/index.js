@@ -18,4 +18,6 @@ module.exports = {
   reportService: require('./reportService'),
   dashboardService: require('./dashboardService'),
   portalService: require('./portalService'),
+  platformService: require('./platformService'),
+  teamService: require('./teamService'),
 };

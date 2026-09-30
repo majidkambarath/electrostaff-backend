@@ -1,33 +1,40 @@
-const { pick } = require('../validation');
+const { randomBytes } = require('crypto');
+const { pick, requireText } = require('../validation');
 const { invalid, notFound } = require('../../domain/errors');
+const { slugify } = require('../../domain/organizations');
+const { planStatus } = require('../../domain/plans');
 
 const ORG_FIELDS = ['name', 'ownerName', 'phone', 'email', 'address'];
 
-module.exports = ({ orgRepo, config }) => {
-  let cachedDefaultId = null;
+// Organizations are the tenants: every business record belongs to exactly one.
+module.exports = ({ orgRepo }) => {
+  const profile = (org) => ({ organizationId: String(org._id), ...pick(org, ORG_FIELDS), plan: planStatus(org.plan) });
 
-  // The organization used by a single-business install (created on first use).
-  const defaultOrgId = async () => {
-    if (cachedDefaultId) return cachedDefaultId;
-    if (config.defaultOrganizationId) {
-      cachedDefaultId = config.defaultOrganizationId;
-      return cachedDefaultId;
+  // A readable slug, suffixed with random characters when the plain one is taken.
+  const uniqueSlug = async (name) => {
+    const base = slugify(name);
+    if (!(await orgRepo.slugTaken(base))) return base;
+    for (let i = 0; i < 5; i += 1) {
+      const slug = `${base}-${randomBytes(3).toString('hex')}`;
+      if (!(await orgRepo.slugTaken(slug))) return slug;
     }
-    const org = (await orgRepo.findBySlug('default')) || (await orgRepo.create({ name: 'Default Organization', slug: 'default' }));
-    cachedDefaultId = String(org._id);
-    return cachedDefaultId;
+    throw invalid('Could not create the business, please try again');
   };
 
-  const profile = (org) => ({ organizationId: String(org._id), ...pick(org, ORG_FIELDS) });
-
   return {
-    defaultOrgId,
     get: async (orgId) => {
       const org = await orgRepo.findById(orgId);
       if (!org) throw notFound('Organization');
       return profile(org);
     },
     raw: (orgId) => orgRepo.findById(orgId),
+    // `extra` carries server-set fields (e.g. the trial plan), never user input.
+    create: async (input, extra = {}) => {
+      const body = pick(input, ORG_FIELDS);
+      body.name = requireText(body.name, 'Business name', { min: 2 });
+      return orgRepo.create({ ...body, ...extra, slug: await uniqueSlug(body.name) });
+    },
+    remove: (orgId) => orgRepo.remove(orgId),
     update: async (orgId, input) => {
       const body = pick(input, ORG_FIELDS);
       if (body.name !== undefined && !String(body.name).trim()) throw invalid('Business name is required');

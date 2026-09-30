@@ -21,7 +21,7 @@ const iso = (offsetDays) => {
 (async () => {
   const mongod = await MongoMemoryServer.create();
   process.env.MONGODB_URI = mongod.getUri('electrostaff_test');
-  process.env.DEFAULT_ORGANIZATION_ID = ''; // set (not deleted) so dotenv can't fill it from .env
+  process.env.SIGNUP_ENABLED = 'true'; // set so dotenv can't fill it from .env
 
   const mongoose = require('mongoose');
   await mongoose.connect(process.env.MONGODB_URI);
@@ -49,18 +49,20 @@ const iso = (offsetDays) => {
   };
 
   try {
-    console.log('Auth & setup');
+    console.log('Auth & sign-up');
     let r = await call('GET', '/auth/status');
-    check(r.data.setupRequired === true, 'fresh install needs setup');
+    check(r.data.signupEnabled === true, 'public sign-up is open');
     r = await call('GET', '/staff');
     check(r.status === 401, 'data routes need sign-in');
-    r = await call('POST', '/auth/setup', { name: 'Owner', phone: '98450 11111', password: 'short' });
-    check(r.status === 400, 'weak password rejected at setup');
-    r = await call('POST', '/auth/setup', { name: 'Owner', phone: '98450 11111', password: 'owner-pass-1', businessName: 'Test Electricals' });
-    check(r.status === 201 && r.data.token && r.data.principal.role === 'owner', 'owner created by setup', r.data);
+    r = await call('POST', '/auth/signup', { name: 'Owner', phone: '98450 11111', password: 'short', businessName: 'Test Electricals' });
+    check(r.status === 400, 'weak password rejected at sign-up');
+    r = await call('POST', '/auth/signup', { name: 'Owner', phone: '98450 11111', password: 'owner-pass-1' });
+    check(r.status === 400, 'business name required');
+    r = await call('POST', '/auth/signup', { name: 'Owner', phone: '98450 11111', password: 'owner-pass-1', businessName: 'Test Electricals' });
+    check(r.status === 201 && r.data.token && r.data.principal.role === 'owner', 'business + owner created by sign-up', r.data);
     adminToken = r.data.token;
-    r = await call('POST', '/auth/setup', { name: 'X', phone: '9845022222', password: 'another-pass' });
-    check(r.status === 409, 'setup cannot run twice');
+    r = await call('POST', '/auth/signup', { name: 'Xavier', phone: '+91 98450 11111', password: 'another-pass', businessName: 'Copycat' });
+    check(r.status === 409, 'the same mobile cannot sign up twice', r);
     r = await call('POST', '/auth/login', { phone: '9845011111', password: 'wrong-pass' }, '');
     check(r.status === 401, 'wrong password -> 401');
     r = await call('POST', '/auth/login', { phone: { $gt: '' }, password: { $gt: '' } }, '');
@@ -238,7 +240,7 @@ const iso = (offsetDays) => {
     await call('PUT', `/sites/${S1}`, { contractValue: 50000 });
     r = await call('POST', '/receipts', { siteId: S1, amount: 20000, date: iso(-2), reference: 'RA bill 1' });
     check(r.status === 201, 'client payment recorded');
-    r = await call('POST', '/expenses', { siteId: S1, category: 'material', amount: 3000, date: iso(-1), vendor: 'Anchor' });
+    r = await call('POST', '/expenses', { siteId: S1, category: 'material', amount: 3000, date: iso(0), vendor: 'Anchor' });
     check(r.status === 201, 'site expense recorded');
     r = await call('POST', '/expenses', { category: 'rent', amount: 500, date: iso(-1) });
     check(r.status === 201 && !r.data.siteId, 'general expense recorded');
@@ -254,8 +256,19 @@ const iso = (offsetDays) => {
     check(r.data.length === 1 && r.data[0].category === 'rent', 'filter general expenses');
     r = await call('GET', `/reports/summary?from=${iso(-10)}&to=${iso(0)}`);
     check(r.data.totals.expenses === 3500 && r.data.totals.received === 20000 && r.data.totals.otHours === 5, 'report money + OT totals', r.data.totals);
+    r = await call('GET', `/reports/staff?staffId=${A}&from=${iso(-10)}&to=${iso(0)}`);
+    check(
+      r.status === 200 && r.data.bySite.length >= 1 &&
+        r.data.summary.earned === r.data.bySite.reduce((s, x) => s + x.amount, 0) &&
+        r.data.days.every((d, i, a) => i === 0 || new Date(a[i - 1].date) <= new Date(d.date)) &&
+        r.data.summary.payableDays === r.data.summary.present + r.data.summary.half / 2,
+      'staff report: per-site earnings add up, days in order',
+      r.data.summary
+    );
+    r = await call('GET', `/reports/staff?staffId=${A}&from=${iso(0)}&to=${iso(-5)}`);
+    check(r.status === 400, 'staff report rejects a reversed range');
     r = await call('GET', '/dashboard');
-    check(r.data.stats.clientDues === 30000 && r.data.charts.siteCost[0].expenses === 3000, 'dashboard dues + site cost split', r.data.stats);
+    check(r.data.stats.clientDues === 30000 && r.data.charts.siteCost[0].expenses === 3000, 'dashboard dues + site cost split', { dues: r.data.stats.clientDues, siteCost: r.data.charts.siteCost });
 
     console.log('Muster roll & slip');
     const md = new Date();
@@ -379,6 +392,200 @@ const iso = (offsetDays) => {
     check(r.status === 401, 'reset signs out existing sessions');
     r = await call('POST', '/auth/login', { phone: '9845011111', password: 'owner-reset-1' }, '');
     check(r.status === 200 && r.data.principal.role === 'owner', 'owner signs in with the new password');
+    adminToken = r.data.token;
+    r = await call('POST', '/staff', { name: 'Login Holder', phone: '9000000077', dailyWage: 500 });
+    await call('POST', `/staff/${r.data._id}/access`, { generate: true });
+    cli = reset('98450 11111', 'owner-reset-2', '9000000077');
+    check(cli.status !== 0, 'cannot move owner onto a staff login number');
+    cli = reset('98450 11111', 'owner-reset-2', '9845022222');
+    check(cli.status === 0 && cli.stdout.includes('Sign in with 9845022222'), 'owner moved to a new mobile number', cli.stderr);
+    r = await call('POST', '/auth/login', { phone: '9845011111', password: 'owner-reset-2' }, '');
+    check(r.status === 401, 'old number no longer signs in');
+    r = await call('POST', '/auth/login', { phone: '9845022222', password: 'owner-reset-2' }, '');
+    check(r.status === 200 && r.data.principal.role === 'owner', 'owner signs in with the new number');
+    adminToken = r.data.token;
+
+    console.log('Multi-tenant isolation');
+    r = await call('POST', '/auth/signup', { name: 'Other Owner', phone: '9845033333', password: 'other-pass-1', businessName: 'Other Electricals' }, '');
+    check(r.status === 201, 'a second business signs up', r.data);
+    const otherToken = r.data.token;
+    r = await call('GET', '/auth/me', null, otherToken);
+    check(r.data.organization.name === 'Other Electricals', 'second owner sees own business');
+    for (const url of ['/staff', '/sites', '/payments', '/advances', '/leaves', '/requests', '/payroll', '/expenses', '/performance']) {
+      r = await call('GET', url, null, otherToken);
+      check(r.status === 200 && Array.isArray(r.data) && r.data.length === 0, `new business starts empty: ${url}`, r.data);
+    }
+    r = await call('GET', '/notifications', null, otherToken);
+    check(r.data.items.length === 0, 'no notifications from another business');
+    const foreign = [
+      ['GET', `/staff/${B}`], ['PUT', `/staff/${B}`, { name: 'Hijack' }], ['DELETE', `/staff/${B}`], ['POST', `/staff/${B}/access`, { generate: true }],
+      ['GET', `/sites/${S1}`], ['PUT', `/sites/${S1}`, { name: 'Hijack' }], ['DELETE', `/sites/${S1}`], ['POST', `/sites/${S1}/assign`, { staffId: B }],
+      ['GET', `/payments/${PA}`], ['GET', `/payments/${PP}/proof`], ['PUT', `/payments/${PA}/mark-paid`, { paymentMode: 'cash' }], ['DELETE', `/payments/${PA}`],
+      ['PUT', `/leaves/${LV}`, { status: 'rejected' }], ['PUT', `/requests/${RQ}`, { status: 'rejected' }],
+      ['GET', `/attendance?siteId=${S1}&date=${iso(0)}`], ['GET', `/reports/staff?staffId=${B}&from=${iso(-30)}&to=${iso(0)}`],
+    ];
+    for (const [method, url, body] of foreign) {
+      r = await call(method, url, body, otherToken);
+      check(r.status === 404, `another business gets 404: ${method} ${url.replace(/[0-9a-f]{24}/g, ':id')}`, r);
+    }
+    r = await call('GET', `/staff/${B}`);
+    check(r.status === 200 && r.data.name === 'Bala', "first business's staff untouched");
+    r = await call('POST', '/staff', { name: 'Same Number', phone: '9000000077', dailyWage: 500 }, otherToken);
+    check(r.status === 201, 'same worker number can be staff in two businesses');
+    r = await call('POST', `/staff/${r.data._id}/access`, { generate: true }, otherToken);
+    check(r.status === 409, "but a staff-app login number can't be reused across businesses");
+    r = await call('POST', '/staff', { name: 'Owner Number', phone: '9845033333', dailyWage: 500 }, otherToken);
+    r = await call('POST', `/staff/${r.data._id}/access`, { generate: true }, otherToken);
+    check(r.status === 409, "an owner's number can't become a staff login");
+
+    console.log('Platform portal');
+    const platformCli = (...args) =>
+      spawnSync(process.execPath, [require('path').join(__dirname, '../scripts/platform-admin.js'), ...args], { env: process.env, encoding: 'utf8' });
+    cli = platformCli('x', 'developer@123');
+    check(cli.status !== 0, 'developer username must be valid');
+    cli = platformCli('developer', 'developer@123');
+    check(cli.status === 0 && cli.stdout.includes('created'), 'developer account created from the CLI', cli.stderr);
+    r = await call('POST', '/auth/developer-login', { username: 'developer', password: 'wrong-pass' }, '');
+    check(r.status === 401, 'wrong developer password -> 401');
+    r = await call('POST', '/auth/developer-login', { username: { $gt: '' }, password: { $gt: '' } }, '');
+    check(r.status === 400, 'operator injection in developer login is neutralised');
+    r = await call('POST', '/auth/developer-login', { username: 'Developer', password: 'developer@123' }, '');
+    check(r.status === 200 && r.data.principal.role === 'platform', 'developer signs in (developer mode)');
+    const platToken = r.data.token;
+    r = await call('POST', '/auth/login', { phone: 'developer', password: 'developer@123' }, '');
+    check(r.status === 400 || r.status === 401, 'developer cannot use the business sign-in');
+    r = await call('GET', '/auth/me', null, platToken);
+    check(r.status === 200 && r.data.organization === null, 'platform admin has no business');
+    r = await call('GET', '/staff', null, platToken);
+    check(r.status === 403, 'platform admin cannot open business data');
+    r = await call('GET', '/notifications', null, platToken);
+    check(r.status === 403, 'platform admin has no business notifications');
+    r = await call('GET', '/platform/organizations');
+    check(r.status === 403, 'business owner cannot open the platform portal');
+    r = await call('GET', '/platform/organizations', null, platToken);
+    const first = r.data.find?.((o) => o.name === 'Test Electricals');
+    check(r.status === 200 && r.data.length === 2 && first?.owner?.phone === '9845022222' && first.counts.staff >= 1, 'platform lists businesses with owner + counts', r.data);
+    const otherOrg = r.data.find((o) => o.name === 'Other Electricals');
+    r = await call('GET', '/platform/overview', null, platToken);
+    check(r.data.organizations === 2 && r.data.active === 2, 'platform overview totals', r.data);
+    r = await call('POST', '/platform/organizations', { businessName: 'Third Co', ownerName: 'Third Owner', phone: '9845044444' }, platToken);
+    check(r.status === 201 && r.data.password?.length >= 8, 'platform creates a business with an owner password', r.data);
+    r = await call('POST', '/auth/login', { phone: '9845044444', password: r.data.password }, '');
+    check(r.status === 200 && r.data.principal.role === 'owner', 'new owner signs in');
+    r = await call('POST', '/platform/organizations', { businessName: 'Dup', ownerName: 'Dup', phone: '9845033333' }, platToken);
+    check(r.status === 409, 'platform cannot reuse a login number');
+    r = await call('PUT', `/platform/organizations/${otherOrg.id}/status`, { status: 'suspended' }, platToken);
+    check(r.status === 200 && r.data.status === 'suspended', 'platform suspends a business');
+    r = await call('GET', '/staff', null, otherToken);
+    check(r.status === 403, 'suspended business is locked out');
+    r = await call('POST', '/auth/login', { phone: '9845033333', password: 'other-pass-1' }, '');
+    check(r.status === 403, 'suspended business cannot sign in');
+    r = await call('GET', '/staff');
+    check(r.status === 200, 'other businesses keep working');
+    await call('PUT', `/platform/organizations/${otherOrg.id}/status`, { status: 'active' }, platToken);
+    r = await call('GET', '/staff', null, otherToken);
+    check(r.status === 200, 'reactivated business works again');
+
+    console.log('Office team & supervisors');
+    r = await call('POST', '/team', { name: 'Site Sup', phone: '9845066666', role: 'supervisor', siteIds: [] });
+    check(r.status === 400, 'supervisor needs at least one site');
+    r = await call('POST', '/team', { name: 'Site Sup', phone: '9000000077', role: 'supervisor', siteIds: [S1] });
+    check(r.status === 409, "team member can't use a staff login number");
+    r = await call('POST', '/team', { name: 'Site Sup', phone: '9845066666', role: 'supervisor', siteIds: [S1] });
+    check(r.status === 201 && r.data.password && r.data.member.role === 'supervisor', 'owner adds a supervisor', r.data);
+    const supId = r.data.member._id;
+    r = await call('POST', '/auth/login', { phone: '9845066666', password: r.data.password }, '');
+    check(r.status === 200 && r.data.principal.mustChangePassword && r.data.principal.siteIds[0] === S1, 'supervisor signs in (must change password)');
+    let supToken = r.data.token;
+    r = await call('GET', '/sites', null, supToken);
+    check(r.status === 200 && r.data.length === 1 && r.data[0]._id === S1 && r.data[0].contractValue === undefined, 'supervisor sees only their site, without money');
+    r = await call('GET', `/attendance?siteId=${S2}&date=${iso(0)}`, null, supToken);
+    check(r.status === 403, "supervisor can't open another site");
+    r = await call('GET', `/attendance?siteId=${S1}&date=${iso(0)}`, null, supToken);
+    check(r.status === 200, 'supervisor opens their site attendance');
+    for (const url of ['/staff', '/payments', '/dashboard', '/team', '/reports/summary']) {
+      r = await call('GET', url, null, supToken);
+      check(r.status === 403, `supervisor blocked from ${url}`);
+    }
+    r = await call('POST', '/team', { name: 'An Admin', phone: '9845077777', role: 'admin' });
+    check(r.status === 201, 'owner adds an admin');
+    const adminLogin = await call('POST', '/auth/login', { phone: '9845077777', password: r.data.password }, '');
+    r = await call('POST', '/team', { name: 'X Y', phone: '9845088888', role: 'admin' }, adminLogin.data.token);
+    check(r.status === 403, 'only the owner manages the team');
+    r = await call('GET', '/team');
+    check(r.data.length === 3 && r.data.some((m) => m.role === 'owner'), 'team lists owner, admin and supervisor');
+    r = await call('POST', `/team/${supId}/reset-password`);
+    check(r.status === 200 && r.data.password, 'owner resets a team password');
+    r = await call('GET', '/sites', null, supToken);
+    check(r.status === 401, 'reset signs the supervisor out');
+    await call('DELETE', `/team/${supId}`);
+    r = await call('POST', '/auth/login', { phone: '9845066666', password: 'whatever-1' }, '');
+    check(r.status === 401, 'removed supervisor cannot sign in');
+
+    console.log('Geofenced check-in');
+    r = await call('PUT', `/sites/${S1}`, { geofence: { lat: 13.08, lng: 80.27, radius: 10 } });
+    check(r.status === 400, 'radius below 50 m rejected');
+    r = await call('PUT', `/sites/${S1}`, { geofence: { lat: 13.08, lng: 80.27, radius: 200 } });
+    check(r.status === 200 && r.data.geofence.radius === 200, 'site location + radius saved');
+    r = await call('POST', '/staff', { name: 'Fence Tester', phone: '9000000088', dailyWage: 600 });
+    const FT = r.data._id;
+    await call('POST', `/sites/${S1}/assign`, { staffId: FT });
+    await call('POST', `/staff/${FT}/access`, { password: 'fence-pass-1' });
+    r = await call('POST', '/auth/login', { phone: '9000000088', password: 'fence-pass-1' }, '');
+    const ftToken = r.data.token;
+    r = await call('POST', '/me/check-in', { siteId: S1, status: 'present' }, ftToken);
+    check(r.status === 400 && /location/i.test(r.data.message), 'check-in without location refused at a fenced site');
+    r = await call('POST', '/me/check-in', { siteId: S1, status: 'present', lat: 13.2, lng: 80.27, accuracy: 20 }, ftToken);
+    check(r.status === 400 && /km away/.test(r.data.message), 'check-in far from the site refused', r.data);
+    r = await call('POST', '/me/check-in', { siteId: S1, status: 'present', lat: 13.0805, lng: 80.2702, accuracy: 15 }, ftToken);
+    check(r.status === 201, 'check-in inside the fence accepted', r.data);
+    r = await call('GET', `/attendance?siteId=${S1}&date=${iso(0)}`);
+    check(r.data.records.find((x) => x.staff._id === FT)?.attendance?.checkIn?.distance < 200, 'office sees distance from site');
+    await call('PUT', `/sites/${S1}`, { geofence: null });
+
+    console.log('Bulk staff import');
+    r = await call('POST', '/staff/import', {
+      rows: [
+        { name: 'Imported One', phone: '+91 90000 00101', role: 'helper', dailyWage: 500 },
+        { name: 'No Phone', phone: '123', dailyWage: 500 },
+        { name: 'Dup Phone', phone: '9000000101', dailyWage: 500 },
+        { name: '', phone: '9000000102', dailyWage: 500 },
+      ],
+    });
+    check(r.status === 201 && r.data.created === 1 && r.data.skipped.length === 3 && r.data.skipped[0].row === 2, 'import saves good rows, reports bad ones', r.data);
+
+    console.log('Plans');
+    r = await call('GET', '/auth/me', null, otherToken);
+    check(r.data.organization.plan.name === 'trial' && r.data.organization.plan.daysLeft === 14, 'new business starts on a 14-day trial', r.data.organization.plan);
+    const activeCount = (await call('GET', '/staff')).data.filter((x) => x.status !== 'inactive').length;
+    r = await call('PUT', `/platform/organizations/${first.id}/plan`, { name: 'starter', staffLimit: activeCount }, platToken);
+    check(r.status === 200 && r.data.plan.staffLimit === activeCount, 'developer sets a plan');
+    r = await call('POST', '/staff', { name: 'Over Limit', phone: '9000000111', dailyWage: 500 });
+    check(r.status === 403 && /plan allows/.test(r.data.message), 'staff limit enforced');
+    r = await call('PUT', `/platform/organizations/${first.id}/plan`, { name: 'starter', validUntil: iso(-1) }, platToken);
+    r = await call('GET', '/auth/me');
+    check(r.data.principal.readOnly === true && r.data.organization.plan.expired, 'expired plan makes the office read-only');
+    r = await call('GET', '/staff');
+    check(r.status === 200, 'read-only office can still look');
+    r = await call('POST', '/advances', { staffId: B, amount: 100, date: iso(0) });
+    check(r.status === 403 && /read-only/.test(r.data.message), 'read-only office cannot change data');
+    r = await call('PUT', `/platform/organizations/${first.id}/plan`, { name: null }, platToken);
+    check(r.status === 200 && r.data.plan.name === null, 'developer removes the plan limits');
+    r = await call('POST', '/advances', { staffId: B, amount: 100, date: iso(0) });
+    check(r.status === 201, 'writes work again');
+
+    console.log('Closed sign-up');
+    const closed = buildApp({ ...buildConfig(), signupEnabled: false, authRateLimit: 1000, rateLimitPerMinute: 10000 }).listen(0);
+    const closedBase = `http://127.0.0.1:${closed.address().port}/api`;
+    let res = await fetch(`${closedBase}/auth/status`);
+    check((await res.json()).signupEnabled === false, 'status reports sign-up closed');
+    res = await fetch(`${closedBase}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Late', phone: '9845055555', password: 'late-pass-1', businessName: 'Late Co' }),
+    });
+    check(res.status === 403, 'sign-up refused when closed');
+    closed.close();
   } catch (err) {
     failures += 1;
     console.error('Test crashed:', err);
