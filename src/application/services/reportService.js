@@ -1,12 +1,80 @@
 const { requireRange, monthRange, dayKey } = require('../../domain/dates');
-const { siteAmount, netAmountOf, otRateOf } = require('../../domain/wages');
+const { siteAmount, netAmountOf, otRateOf, recordEarning } = require('../../domain/wages');
+const { summarize } = require('../../domain/attendance');
 const { invalid, notFound } = require('../../domain/errors');
 const { requireId } = require('../validation');
 
 const emptyCounts = () => ({ present: 0, half: 0, absent: 0, leave: 0, otHours: 0 });
 const addCounts = (target, c) => Object.keys(c).forEach((k) => (target[k] += c[k]));
 
-module.exports = ({ attendanceRepo, paymentRepo, advanceRepo, expenseRepo, receiptRepo, staffRepo, siteRepo, assignmentRepo }) => ({
+module.exports = ({ attendanceRepo, paymentRepo, advanceRepo, expenseRepo, receiptRepo, staffRepo, siteRepo, assignmentRepo, wageService }) => ({
+  // One worker over [from, to]: where they worked, how many days, what they earned per site,
+  // what was paid / is pending, advances, plus a day-by-day list. Outstanding and advance balance
+  // are all-time (what is owed today), like the staff page.
+  staff: async (orgId, { staffId, from, to }) => {
+    requireId(staffId, 'staffId');
+    const { start, end } = requireRange(from, to, 'from', 'to');
+    const staff = await staffRepo.findById(orgId, staffId);
+    if (!staff) throw notFound('Staff');
+    const [calc, records, payments, advances, assignments, outstandingRows, advanceBalance] = await Promise.all([
+      wageService.calcBreakdown(staff, start, end, orgId),
+      attendanceRepo.listForStaff(orgId, staff._id, { start, end }),
+      paymentRepo.list(orgId, { staffId: staff._id, start, end }),
+      advanceRepo.list(orgId, staff._id),
+      assignmentRepo.listForStaff(orgId, staff._id),
+      wageService.computeOutstanding(orgId, { staffId: staff._id }),
+      wageService.advanceBalanceFor(orgId, staff._id),
+    ]);
+    const inRange = (d) => d && new Date(d) >= start && new Date(d) <= end;
+    // OT only counts on payable (present/half) days.
+    const summary = { ...summarize(records), otHours: calc.otHours };
+    const paid = payments.filter((p) => p.status === 'paid');
+    const pending = payments.filter((p) => p.status === 'pending');
+    const advancesInRange = advances.filter((a) => inRange(a.date));
+    const { passwordHash, tokenVersion, ...publicStaff } = staff;
+    return {
+      from: start,
+      to: end,
+      staff: { ...publicStaff, otRate: otRateOf(staff) },
+      sites: assignments.map((a) => ({ _id: a.siteId._id, name: a.siteId.name, status: a.siteId.status })),
+      summary: {
+        ...summary,
+        sitesWorked: calc.breakdown.length,
+        earned: calc.totalAmount,
+        otAmount: calc.otAmount,
+        paidInRange: paid.filter((p) => inRange(p.paidDate)).reduce((s, p) => s + netAmountOf(p), 0),
+        pendingAmount: pending.reduce((s, p) => s + netAmountOf(p), 0),
+        advancesGiven: advancesInRange.reduce((s, a) => s + a.amount, 0),
+        advanceRecovered: paid.reduce((s, p) => s + (p.advanceDeducted || 0), 0),
+        advanceBalance,
+        outstanding: outstandingRows[0]?.amount || 0,
+        outstandingDays: outstandingRows[0]?.payableDays || 0,
+      },
+      bySite: calc.breakdown,
+      days: [...records]
+        .sort((a, b) => new Date(a.date) - new Date(b.date))
+        .map((r) => ({
+          date: r.date,
+          site: r.siteId ? { _id: r.siteId._id, name: r.siteId.name } : null,
+          status: r.status,
+          otHours: r.otHours || 0,
+          source: r.source,
+          amount: Math.round(recordEarning(staff, r)),
+        })),
+      payments: payments.map((p) => ({
+        _id: p._id,
+        periodStart: p.periodStart,
+        periodEnd: p.periodEnd,
+        status: p.status,
+        net: netAmountOf(p),
+        advanceDeducted: p.advanceDeducted || 0,
+        paymentMode: p.paymentMode,
+        paidDate: p.paidDate,
+      })),
+      advances: advancesInRange.map((a) => ({ _id: a._id, date: a.date, amount: a.amount, note: a.note, paymentMode: a.paymentMode })),
+    };
+  },
+
   // Wage & money report for [from, to], grouped by staff and by site.
   summary: async (orgId, { from, to }) => {
     const { start, end } = requireRange(from, to, 'from', 'to');

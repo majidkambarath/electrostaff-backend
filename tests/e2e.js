@@ -256,6 +256,17 @@ const iso = (offsetDays) => {
     check(r.data.length === 1 && r.data[0].category === 'rent', 'filter general expenses');
     r = await call('GET', `/reports/summary?from=${iso(-10)}&to=${iso(0)}`);
     check(r.data.totals.expenses === 3500 && r.data.totals.received === 20000 && r.data.totals.otHours === 5, 'report money + OT totals', r.data.totals);
+    r = await call('GET', `/reports/staff?staffId=${A}&from=${iso(-10)}&to=${iso(0)}`);
+    check(
+      r.status === 200 && r.data.bySite.length >= 1 &&
+        r.data.summary.earned === r.data.bySite.reduce((s, x) => s + x.amount, 0) &&
+        r.data.days.every((d, i, a) => i === 0 || new Date(a[i - 1].date) <= new Date(d.date)) &&
+        r.data.summary.payableDays === r.data.summary.present + r.data.summary.half / 2,
+      'staff report: per-site earnings add up, days in order',
+      r.data.summary
+    );
+    r = await call('GET', `/reports/staff?staffId=${A}&from=${iso(0)}&to=${iso(-5)}`);
+    check(r.status === 400, 'staff report rejects a reversed range');
     r = await call('GET', '/dashboard');
     check(r.data.stats.clientDues === 30000 && r.data.charts.siteCost[0].expenses === 3000, 'dashboard dues + site cost split', { dues: r.data.stats.clientDues, siteCost: r.data.charts.siteCost });
 
@@ -411,7 +422,7 @@ const iso = (offsetDays) => {
       ['GET', `/sites/${S1}`], ['PUT', `/sites/${S1}`, { name: 'Hijack' }], ['DELETE', `/sites/${S1}`], ['POST', `/sites/${S1}/assign`, { staffId: B }],
       ['GET', `/payments/${PA}`], ['GET', `/payments/${PP}/proof`], ['PUT', `/payments/${PA}/mark-paid`, { paymentMode: 'cash' }], ['DELETE', `/payments/${PA}`],
       ['PUT', `/leaves/${LV}`, { status: 'rejected' }], ['PUT', `/requests/${RQ}`, { status: 'rejected' }],
-      ['GET', `/attendance?siteId=${S1}&date=${iso(0)}`],
+      ['GET', `/attendance?siteId=${S1}&date=${iso(0)}`], ['GET', `/reports/staff?staffId=${B}&from=${iso(-30)}&to=${iso(0)}`],
     ];
     for (const [method, url, body] of foreign) {
       r = await call(method, url, body, otherToken);

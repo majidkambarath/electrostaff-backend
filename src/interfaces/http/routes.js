@@ -137,6 +137,7 @@ module.exports = (s) => {
   office.delete('/performance/:id', handle((req) => s.performanceService.remove(org(req), req.params.id)));
 
   office.get('/reports/summary', handle((req) => s.reportService.summary(org(req), req.query)));
+  office.get('/reports/staff', handle((req) => s.reportService.staff(org(req), req.query)));
   office.get('/reports/muster', handle((req) => s.reportService.muster(org(req), req.query)));
 
   api.use(office);
