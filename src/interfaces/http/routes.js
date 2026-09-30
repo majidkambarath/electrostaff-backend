@@ -12,6 +12,7 @@ module.exports = (s) => {
   api.get('/auth/status', handle(() => s.authService.status()));
   api.post('/auth/signup', handle((req) => s.authService.signup(req.body), created));
   api.post('/auth/login', handle((req) => s.authService.login(req.body)));
+  api.post('/auth/developer-login', handle((req) => s.authService.platformLogin(req.body)));
 
   // ---- Any signed-in user -------------------------------------------------
   api.use(authenticate(s.authService));

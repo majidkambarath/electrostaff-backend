@@ -11,7 +11,8 @@ const SUSPENDED = 'This business account is suspended. Contact ElectroStaff supp
 // Sign-in for every account kind, plus public "create your business" sign-up.
 //   user     – office account (owner/admin) of one organization
 //   staff    – worker with staff-app access in one organization
-//   platform – operator of the SaaS (platform portal); belongs to no organization
+//   platform – developer/operator of the SaaS (developer mode); no organization, signs in
+//              with a username through platformLogin only
 // Tokens carry { sub, kind, v: tokenVersion }; bumping tokenVersion (password change,
 // access revoked) signs every device out. A login mobile number is unique across the platform.
 module.exports = ({ userRepo, staffRepo, platformAdminRepo, orgRepo, orgService, passwordHasher, tokenService, config = {}, clock = () => Date.now() }) => {
@@ -43,13 +44,11 @@ module.exports = ({ userRepo, staffRepo, platformAdminRepo, orgRepo, orgService,
     if (entry.status !== 'active') throw forbidden(SUSPENDED);
   };
 
-  // One number = one login on the whole platform (office user, platform admin or staff app).
-  const assertLoginPhoneFree = async (phoneKey, { staffId, userId, platformAdminId } = {}, message) => {
+  // One number = one login on the whole platform (office user or staff app).
+  const assertLoginPhoneFree = async (phoneKey, { staffId, userId } = {}, message) => {
     const msg = message || 'This mobile number is already used to sign in to ElectroStaff. Use a different number.';
     const user = await userRepo.findByPhoneKeyWithSecret(phoneKey);
     if (user && String(user._id) !== String(userId)) throw conflict(msg);
-    const admin = await platformAdminRepo.findByPhoneKeyWithSecret(phoneKey);
-    if (admin && String(admin._id) !== String(platformAdminId)) throw conflict(msg);
     if (await staffRepo.loginTaken(phoneKey, staffId)) throw conflict(msg);
   };
 
@@ -76,7 +75,7 @@ module.exports = ({ userRepo, staffRepo, platformAdminRepo, orgRepo, orgService,
     id: String(a._id),
     role: 'platform',
     name: a.name,
-    phone: a.phone,
+    username: a.username,
     organizationId: null,
   });
 
@@ -126,7 +125,7 @@ module.exports = ({ userRepo, staffRepo, platformAdminRepo, orgRepo, orgService,
       return { token: issue('user', user), principal: userPrincipal(user) };
     },
 
-    // One sign-in screen for everyone: office accounts, platform admins, then staff with app access.
+    // One sign-in screen for businesses: office accounts, then staff with app access.
     login: async ({ phone, password }) => {
       const key = normalizePhone(phone);
       if (key.length !== 10 || !password) throw invalid('Enter your mobile number and password');
@@ -138,12 +137,6 @@ module.exports = ({ userRepo, staffRepo, platformAdminRepo, orgRepo, orgService,
         failures.delete(key);
         userRepo.touchLogin(user._id);
         return { token: issue('user', user), principal: userPrincipal(user) };
-      }
-      const admin = await platformAdminRepo.findByPhoneKeyWithSecret(key);
-      if (admin && (await passwordHasher.verify(password, admin.passwordHash))) {
-        failures.delete(key);
-        platformAdminRepo.touchLogin(admin._id);
-        return { token: issue('platform', admin), principal: platformPrincipal(admin) };
       }
       for (const staff of await staffRepo.findForLogin(key)) {
         if (await passwordHasher.verify(password, staff.passwordHash)) {
@@ -218,20 +211,35 @@ module.exports = ({ userRepo, staffRepo, platformAdminRepo, orgRepo, orgService,
       return { name: user.name, role: user.role, phone: phoneNow };
     },
 
-    // Command line only (scripts/platform-admin.js): creates or resets a platform operator.
-    upsertPlatformAdmin: async ({ name, phone, password }) => {
-      const key = normalizePhone(phone);
-      if (key.length !== 10) throw invalid('Enter a valid 10-digit mobile number');
+    // Developer mode sign-in (hidden on the sign-in screen): username + password.
+    platformLogin: async ({ username, password }) => {
+      const name = typeof username === 'string' ? username.trim().toLowerCase() : '';
+      if (!name || typeof password !== 'string' || !password) throw invalid('Enter the developer username and password');
+      const key = `dev:${name}`;
+      checkRate(key);
+      const admin = await platformAdminRepo.findByUsernameWithSecret(name);
+      if (admin && (await passwordHasher.verify(password, admin.passwordHash))) {
+        failures.delete(key);
+        platformAdminRepo.touchLogin(admin._id);
+        return { token: issue('platform', admin), principal: platformPrincipal(admin) };
+      }
+      recordFailure(key);
+      throw unauthorized('Wrong developer username or password');
+    },
+
+    // Command line only (scripts/platform-admin.js): creates a developer account or resets its password.
+    upsertPlatformAdmin: async ({ username, password, name }) => {
+      const handle = String(username || '').trim().toLowerCase();
+      if (!/^[a-z0-9._-]{3,32}$/.test(handle)) throw invalid('Username: 3–32 letters, numbers, dot, dash or underscore');
       assertPassword(password);
       const hash = await passwordHasher.hash(password);
-      const existing = await platformAdminRepo.findByPhoneKeyWithSecret(key);
+      const existing = await platformAdminRepo.findByUsernameWithSecret(handle);
       if (existing) {
         await platformAdminRepo.setPassword(existing._id, hash);
-        return { created: false, name: existing.name, phone: existing.phone };
+        return { created: false, username: handle };
       }
-      await assertLoginPhoneFree(key, {}, `${phone} is already used to sign in to a business; pick another number`);
-      const admin = await platformAdminRepo.create({ name: requireText(name, 'Name', { min: 2 }), phone: key, phoneKey: key, passwordHash: hash });
-      return { created: true, name: admin.name, phone: admin.phone };
+      await platformAdminRepo.create({ username: handle, name: requireText(name || handle, 'Name', { min: 2 }), passwordHash: hash });
+      return { created: true, username: handle };
     },
   };
 };

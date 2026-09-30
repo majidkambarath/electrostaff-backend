@@ -430,13 +430,19 @@ const iso = (offsetDays) => {
     console.log('Platform portal');
     const platformCli = (...args) =>
       spawnSync(process.execPath, [require('path').join(__dirname, '../scripts/platform-admin.js'), ...args], { env: process.env, encoding: 'utf8' });
-    cli = platformCli('9845022222', 'plat-pass-01', 'Ops');
-    check(cli.status !== 0, "platform admin can't use a business login number");
-    cli = platformCli('9845099999', 'plat-pass-01', 'Ops');
-    check(cli.status === 0 && cli.stdout.includes('created'), 'platform admin created from the CLI', cli.stderr);
-    r = await call('POST', '/auth/login', { phone: '9845099999', password: 'plat-pass-01' }, '');
-    check(r.status === 200 && r.data.principal.role === 'platform', 'platform admin signs in');
+    cli = platformCli('x', 'developer@123');
+    check(cli.status !== 0, 'developer username must be valid');
+    cli = platformCli('developer', 'developer@123');
+    check(cli.status === 0 && cli.stdout.includes('created'), 'developer account created from the CLI', cli.stderr);
+    r = await call('POST', '/auth/developer-login', { username: 'developer', password: 'wrong-pass' }, '');
+    check(r.status === 401, 'wrong developer password -> 401');
+    r = await call('POST', '/auth/developer-login', { username: { $gt: '' }, password: { $gt: '' } }, '');
+    check(r.status === 400, 'operator injection in developer login is neutralised');
+    r = await call('POST', '/auth/developer-login', { username: 'Developer', password: 'developer@123' }, '');
+    check(r.status === 200 && r.data.principal.role === 'platform', 'developer signs in (developer mode)');
     const platToken = r.data.token;
+    r = await call('POST', '/auth/login', { phone: 'developer', password: 'developer@123' }, '');
+    check(r.status === 400 || r.status === 401, 'developer cannot use the business sign-in');
     r = await call('GET', '/auth/me', null, platToken);
     check(r.status === 200 && r.data.organization === null, 'platform admin has no business');
     r = await call('GET', '/staff', null, platToken);

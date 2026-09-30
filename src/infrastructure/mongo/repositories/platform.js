@@ -8,7 +8,8 @@ const countBy = async (Model, match = {}) =>
 module.exports = ({ PlatformAdmin, Organization, User, Staff, Site, Payment }) => ({
   platformAdminRepo: {
     count: () => PlatformAdmin.countDocuments(),
-    findByPhoneKeyWithSecret: (phoneKey) => PlatformAdmin.findOne({ phoneKey }).select('+passwordHash').lean(),
+    findByUsernameWithSecret: (username) =>
+      PlatformAdmin.findOne({ username: String(username).trim().toLowerCase() }).select('+passwordHash').lean(),
     findById: (id) => PlatformAdmin.findById(id).lean(),
     findByIdWithSecret: (id) => PlatformAdmin.findById(id).select('+passwordHash').lean(),
     create: async (data) => {
