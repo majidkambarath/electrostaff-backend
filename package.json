@@ -11,7 +11,8 @@
     "reset-password": "node scripts/reset-password.js",
     "platform-admin": "node scripts/platform-admin.js",
     "migrate:tenancy": "node scripts/migrate-tenancy.js",
-    "seed:demo": "node scripts/seed-demo.js"
+    "seed:demo": "node scripts/seed-demo.js",
+    "fix:timezone": "node scripts/fix-timezone.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

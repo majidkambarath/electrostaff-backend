@@ -1,3 +1,8 @@
+// Business days are Indian calendar days. Dates are stored as local midnight, so every process
+// (the Render server on UTC, a laptop, scripts, tests) must use the same zone or a day shifts.
+// Node applies a TZ change at runtime; set it before anything builds a Date.
+process.env.TZ = process.env.APP_TIMEZONE || 'Asia/Kolkata';
+
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
