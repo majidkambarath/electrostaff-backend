@@ -9,4 +9,5 @@ module.exports = () => ({
   ...require('./hr')(models),
   ...require('./messaging')(models),
   ...require('./files')(models),
+  ...require('./platform')(models),
 });

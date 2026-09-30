@@ -91,7 +91,7 @@ module.exports = ({ paymentRepo, staffRepo, orgRepo, attendanceRepo, attachmentR
       const payment = await paymentRepo.findById(orgId, id);
       if (!payment) throw notFound('Payment');
       if (payment.status === 'paid') throw invalid('Paid payments cannot be cancelled');
-      await paymentRepo.remove(payment._id);
+      await paymentRepo.remove(orgId, payment._id);
       return { message: 'Pending payment cancelled' };
     },
 

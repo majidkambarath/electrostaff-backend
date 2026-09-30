@@ -44,7 +44,7 @@ module.exports = ({ Attendance }) => ({
       if (start || end) filter.date = dateRange(start, end);
       return Attendance.find(filter).populate('siteId', 'name address status').sort({ date: -1 }).lean();
     },
-    existsForStaff: async (staffId) => Boolean(await Attendance.exists({ staffId })),
+    existsForStaff: async (orgId, staffId) => Boolean(await Attendance.exists({ staffId, organizationId: orgId })),
     existsForSite: async (orgId, siteId) => Boolean(await Attendance.exists({ siteId, organizationId: orgId })),
 
     // Payable records for wage calculation, flattened to { siteId, siteName, status, otHours }.

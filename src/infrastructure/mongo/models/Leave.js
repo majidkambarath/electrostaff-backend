@@ -22,7 +22,7 @@ const leaveSchema = new mongoose.Schema(
     responseNote: { type: String, trim: true },
     decidedAt: { type: Date },
     // Optional for leaves created before multi-tenancy.
-    organizationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', index: true },
+    organizationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', required: true, index: true },
   },
   { timestamps: true }
 );

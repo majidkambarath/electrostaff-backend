@@ -65,16 +65,16 @@ module.exports = ({ siteRepo, assignmentRepo, attendanceRepo, staffRepo, expense
       const site = await load(orgId, id);
       const [hasAttendance, hasReceipts, hasExpenses] = await Promise.all([
         attendanceRepo.existsForSite(orgId, site._id),
-        receiptRepo.existsForSite(site._id),
-        expenseRepo.existsForSite(site._id),
+        receiptRepo.existsForSite(orgId, site._id),
+        expenseRepo.existsForSite(orgId, site._id),
       ]);
       if (hasAttendance || hasReceipts || hasExpenses) {
         const archived = await siteRepo.update(orgId, site._id, { status: 'completed' });
-        await assignmentRepo.deactivateForSite(site._id);
+        await assignmentRepo.deactivateForSite(orgId, site._id);
         return { archived: true, message: 'Site has history, so it was marked completed', site: archived };
       }
       await assignmentRepo.removeForSite(orgId, site._id);
-      await siteRepo.remove(site._id);
+      await siteRepo.remove(orgId, site._id);
       return { archived: false, message: 'Site deleted' };
     },
 
@@ -93,7 +93,7 @@ module.exports = ({ siteRepo, assignmentRepo, attendanceRepo, staffRepo, expense
       if (staff.some((s) => s.status === 'inactive')) throw invalid('Inactive staff cannot be assigned. Reactivate them first.');
 
       await assignmentRepo.activate(orgId, site._id, ids);
-      return assignmentRepo.listForSiteAndStaff(site._id, ids);
+      return assignmentRepo.listForSiteAndStaff(orgId, site._id, ids);
     },
 
     unassign: async (orgId, id, staffId) => {
@@ -114,7 +114,7 @@ module.exports = ({ siteRepo, assignmentRepo, attendanceRepo, staffRepo, expense
       const staffMap = new Map(assignments.map((a) => [String(a.staffId._id), a.staffId]));
       // Wages of staff no longer assigned still count toward the site's labour cost.
       const missing = [...new Set(records.map((r) => String(r.staffId)))].filter((sid) => !staffMap.has(sid));
-      if (missing.length) (await staffRepo.findByIds(missing, 'dailyWage otRate')).forEach((s) => staffMap.set(String(s._id), s));
+      if (missing.length) (await staffRepo.findByIds(orgId, missing, 'dailyWage otRate')).forEach((s) => staffMap.set(String(s._id), s));
 
       const emptyRow = () => ({ present: 0, absent: 0, half: 0, leave: 0, otHours: 0, totalMarked: 0 });
       const perStaff = new Map();

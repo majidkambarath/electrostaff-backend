@@ -10,11 +10,12 @@ module.exports = ({ Site, SiteAssignment }) => ({
       Site.find({ organizationId: orgId }).select(fields).lean(),
     findById: (orgId, id) => Site.findOne({ _id: id, organizationId: orgId }).lean(),
     exists: async (orgId, id) => Boolean(await Site.exists({ _id: id, organizationId: orgId })),
-    findByIds: (ids, fields = 'name clientName status contractValue') => Site.find({ _id: { $in: ids } }).select(fields).lean(),
+    findByIds: (orgId, ids, fields = 'name clientName status contractValue') =>
+      Site.find({ _id: { $in: ids }, organizationId: orgId }).select(fields).lean(),
     create: async (orgId, data) => (await Site.create({ ...data, organizationId: orgId })).toObject(),
     update: (orgId, id, set) =>
       Site.findOneAndUpdate({ _id: id, organizationId: orgId }, set, { new: true, runValidators: true }).lean(),
-    remove: (id) => Site.deleteOne({ _id: id }),
+    remove: (orgId, id) => Site.deleteOne({ _id: id, organizationId: orgId }),
   },
 
   assignmentRepo: {
@@ -67,19 +68,19 @@ module.exports = ({ Site, SiteAssignment }) => ({
       SiteAssignment.bulkWrite(
         staffIds.map((staffId) => ({
           updateOne: {
-            filter: { staffId, siteId },
+            filter: { staffId, siteId, organizationId: orgId },
             update: { $set: { active: true, organizationId: orgId }, $setOnInsert: { assignedDate: new Date() } },
             upsert: true,
           },
         }))
       ),
-    listForSiteAndStaff: (siteId, staffIds) =>
-      SiteAssignment.find({ siteId, staffId: { $in: staffIds } }).populate('staffId', STAFF_FIELDS).lean(),
+    listForSiteAndStaff: (orgId, siteId, staffIds) =>
+      SiteAssignment.find({ siteId, staffId: { $in: staffIds }, organizationId: orgId }).populate('staffId', STAFF_FIELDS).lean(),
     deactivate: (orgId, siteId, staffId) =>
       SiteAssignment.findOneAndUpdate({ siteId, staffId, organizationId: orgId }, { active: false }, { new: true }).lean(),
-    deactivateForStaff: (staffId) => SiteAssignment.updateMany({ staffId }, { active: false }),
-    deactivateForSite: (siteId) => SiteAssignment.updateMany({ siteId }, { active: false }),
-    removeForStaff: (staffId) => SiteAssignment.deleteMany({ staffId }),
+    deactivateForStaff: (orgId, staffId) => SiteAssignment.updateMany({ staffId, organizationId: orgId }, { active: false }),
+    deactivateForSite: (orgId, siteId) => SiteAssignment.updateMany({ siteId, organizationId: orgId }, { active: false }),
+    removeForStaff: (orgId, staffId) => SiteAssignment.deleteMany({ staffId, organizationId: orgId }),
     removeForSite: (orgId, siteId) => SiteAssignment.deleteMany({ siteId, organizationId: orgId }),
   },
 });

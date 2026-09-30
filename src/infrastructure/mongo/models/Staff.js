@@ -24,7 +24,7 @@ const staffSchema = new mongoose.Schema(
     // UPI ID (e.g. name@okaxis) used to open a UPI app with wages prefilled.
     upiId: { type: String, trim: true, lowercase: true },
     // Staff app (portal) access. phoneKey = last 10 digits of phone, used to sign in.
-    phoneKey: { type: String, index: true },
+    phoneKey: { type: String },
     portalEnabled: { type: Boolean, default: false },
     passwordHash: { type: String, select: false },
     mustChangePassword: { type: Boolean, default: false },
@@ -33,10 +33,14 @@ const staffSchema = new mongoose.Schema(
     organizationId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Organization',
+      required: true,
       index: true,
     },
   },
   { timestamps: true }
 );
+
+// A login number belongs to one account on the whole platform (office users are checked in code).
+staffSchema.index({ phoneKey: 1 }, { unique: true, partialFilterExpression: { portalEnabled: true }, name: 'unique_login_phone' });
 
 module.exports = mongoose.model('Staff', staffSchema);

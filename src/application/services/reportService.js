@@ -23,8 +23,8 @@ module.exports = ({ attendanceRepo, paymentRepo, advanceRepo, expenseRepo, recei
     const staffIds = new Set([...records, ...payments, ...advances].map((r) => String(r.staffId)));
     const siteIds = new Set([...records.map((r) => String(r.siteId)), ...expensesBySite.keys(), ...receiptsBySite.keys()]);
     const [staffDocs, siteDocs] = await Promise.all([
-      staffRepo.findByIds([...staffIds], 'name role phone dailyWage otRate status'),
-      siteRepo.findByIds([...siteIds]),
+      staffRepo.findByIds(orgId, [...staffIds], 'name role phone dailyWage otRate status'),
+      siteRepo.findByIds(orgId, [...siteIds]),
     ]);
     const staffMap = new Map(staffDocs.map((s) => [String(s._id), s]));
     const siteMap = new Map(siteDocs.map((s) => [String(s._id), s]));
@@ -129,7 +129,7 @@ module.exports = ({ attendanceRepo, paymentRepo, advanceRepo, expenseRepo, recei
     if (siteId && !site) throw notFound('Site');
 
     const ids = new Set([...records.map((r) => String(r.staffId)), ...people.map((p) => String(p.staffId?._id || p._id))]);
-    const staffDocs = await staffRepo.findByIds([...ids], 'name role phone dailyWage');
+    const staffDocs = await staffRepo.findByIds(orgId, [...ids], 'name role phone dailyWage');
     const rows = new Map(staffDocs.map((s) => [String(s._id), { staff: s, days: {}, totals: { ...emptyCounts(), payableDays: 0 } }]));
     for (const r of records) {
       const row = rows.get(String(r.staffId));

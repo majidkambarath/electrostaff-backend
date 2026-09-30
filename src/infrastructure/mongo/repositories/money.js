@@ -66,8 +66,8 @@ module.exports = ({ Payment, PayrollRun, Advance, Expense, ClientReceipt }) => (
       }
       return Payment.find(filter).populate(LIST_POPULATE).sort({ createdAt: -1 }).lean();
     },
-    remove: (id) => Payment.deleteOne({ _id: id }),
-    existsForStaff: async (staffId) => Boolean(await Payment.exists({ staffId })),
+    remove: (orgId, id) => Payment.deleteOne({ _id: id, organizationId: orgId }),
+    existsForStaff: async (orgId, staffId) => Boolean(await Payment.exists({ staffId, organizationId: orgId })),
     advanceRecoveredByStaff: async (orgId, staffId) => {
       const match = { organizationId: oid(orgId), advanceDeducted: { $gt: 0 } };
       if (staffId) match.staffId = oid(staffId);
@@ -105,7 +105,7 @@ module.exports = ({ Payment, PayrollRun, Advance, Expense, ClientReceipt }) => (
       Payment.find({ payrollRunId: runId, organizationId: orgId, status: 'pending' }).select('staffId netAmount totalAmount').lean(),
     markRunPaid: (orgId, runId, set) =>
       Payment.updateMany({ payrollRunId: runId, organizationId: orgId, status: 'pending' }, { $set: set }),
-    runHasPaid: async (runId) => Boolean(await Payment.exists({ payrollRunId: runId, status: 'paid' })),
+    runHasPaid: async (orgId, runId) => Boolean(await Payment.exists({ payrollRunId: runId, organizationId: orgId, status: 'paid' })),
     removeRun: (orgId, runId) => Payment.deleteMany({ payrollRunId: runId, organizationId: orgId }),
     recentForStaff: (orgId, staffId, limit = 3) =>
       Payment.find({ organizationId: orgId, staffId }).sort({ createdAt: -1 }).limit(limit).lean(),
@@ -115,7 +115,7 @@ module.exports = ({ Payment, PayrollRun, Advance, Expense, ClientReceipt }) => (
     create: async (data) => (await PayrollRun.create(data)).toObject(),
     list: (orgId) => PayrollRun.find({ organizationId: orgId }).sort({ createdAt: -1 }).lean(),
     findById: (orgId, id) => PayrollRun.findOne({ _id: id, organizationId: orgId }).lean(),
-    remove: (id) => PayrollRun.deleteOne({ _id: id }),
+    remove: (orgId, id) => PayrollRun.deleteOne({ _id: id, organizationId: orgId }),
   },
 
   advanceRepo: {
@@ -137,8 +137,8 @@ module.exports = ({ Payment, PayrollRun, Advance, Expense, ClientReceipt }) => (
       return (await doc.populate('staffId', 'name role phone')).toObject();
     },
     findById: (orgId, id) => Advance.findOne({ _id: id, organizationId: orgId }).lean(),
-    remove: (id) => Advance.deleteOne({ _id: id }),
-    existsForStaff: async (staffId) => Boolean(await Advance.exists({ staffId })),
+    remove: (orgId, id) => Advance.deleteOne({ _id: id, organizationId: orgId }),
+    existsForStaff: async (orgId, staffId) => Boolean(await Advance.exists({ staffId, organizationId: orgId })),
     inRange: (orgId, start, end) => Advance.find({ organizationId: orgId, date: { $gte: start, $lte: end } }).select('staffId amount').lean(),
   },
 
@@ -167,7 +167,7 @@ module.exports = ({ Payment, PayrollRun, Advance, Expense, ClientReceipt }) => (
       ]);
       return rows[0]?.total || 0;
     },
-    existsForSite: async (siteId) => Boolean(await Expense.exists({ siteId })),
+    existsForSite: async (orgId, siteId) => Boolean(await Expense.exists({ siteId, organizationId: orgId })),
   },
 
   receiptRepo: {
@@ -182,6 +182,6 @@ module.exports = ({ Payment, PayrollRun, Advance, Expense, ClientReceipt }) => (
     sumBySite: (orgId, range) => sumBySite(ClientReceipt, orgId, range),
     forSite: (orgId, siteId) => ClientReceipt.find({ siteId, organizationId: orgId }).sort({ date: -1 }).lean(),
     since: (orgId, since) => ClientReceipt.find({ organizationId: orgId, date: { $gte: since } }).select('amount').lean(),
-    existsForSite: async (siteId) => Boolean(await ClientReceipt.exists({ siteId })),
+    existsForSite: async (orgId, siteId) => Boolean(await ClientReceipt.exists({ siteId, organizationId: orgId })),
   },
 });

@@ -11,7 +11,7 @@ const performanceSchema = new mongoose.Schema(
     quality: { type: Number, min: 1, max: 5, default: 3 },
     notes: { type: String, trim: true },
     // Optional for ratings created before multi-tenancy.
-    organizationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', index: true },
+    organizationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', required: true, index: true },
   },
   { timestamps: true }
 );

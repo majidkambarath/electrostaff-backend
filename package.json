@@ -8,7 +8,9 @@
     "dev": "nodemon server.js",
     "test": "node --test tests/domain.test.js && node tests/e2e.js",
     "test:unit": "node --test tests/domain.test.js",
-    "reset-password": "node scripts/reset-password.js"
+    "reset-password": "node scripts/reset-password.js",
+    "platform-admin": "node scripts/platform-admin.js",
+    "migrate:tenancy": "node scripts/migrate-tenancy.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

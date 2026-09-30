@@ -21,7 +21,7 @@ const iso = (offsetDays) => {
 (async () => {
   const mongod = await MongoMemoryServer.create();
   process.env.MONGODB_URI = mongod.getUri('electrostaff_test');
-  process.env.DEFAULT_ORGANIZATION_ID = ''; // set (not deleted) so dotenv can't fill it from .env
+  process.env.SIGNUP_ENABLED = 'true'; // set so dotenv can't fill it from .env
 
   const mongoose = require('mongoose');
   await mongoose.connect(process.env.MONGODB_URI);
@@ -49,18 +49,20 @@ const iso = (offsetDays) => {
   };
 
   try {
-    console.log('Auth & setup');
+    console.log('Auth & sign-up');
     let r = await call('GET', '/auth/status');
-    check(r.data.setupRequired === true, 'fresh install needs setup');
+    check(r.data.signupEnabled === true, 'public sign-up is open');
     r = await call('GET', '/staff');
     check(r.status === 401, 'data routes need sign-in');
-    r = await call('POST', '/auth/setup', { name: 'Owner', phone: '98450 11111', password: 'short' });
-    check(r.status === 400, 'weak password rejected at setup');
-    r = await call('POST', '/auth/setup', { name: 'Owner', phone: '98450 11111', password: 'owner-pass-1', businessName: 'Test Electricals' });
-    check(r.status === 201 && r.data.token && r.data.principal.role === 'owner', 'owner created by setup', r.data);
+    r = await call('POST', '/auth/signup', { name: 'Owner', phone: '98450 11111', password: 'short', businessName: 'Test Electricals' });
+    check(r.status === 400, 'weak password rejected at sign-up');
+    r = await call('POST', '/auth/signup', { name: 'Owner', phone: '98450 11111', password: 'owner-pass-1' });
+    check(r.status === 400, 'business name required');
+    r = await call('POST', '/auth/signup', { name: 'Owner', phone: '98450 11111', password: 'owner-pass-1', businessName: 'Test Electricals' });
+    check(r.status === 201 && r.data.token && r.data.principal.role === 'owner', 'business + owner created by sign-up', r.data);
     adminToken = r.data.token;
-    r = await call('POST', '/auth/setup', { name: 'X', phone: '9845022222', password: 'another-pass' });
-    check(r.status === 409, 'setup cannot run twice');
+    r = await call('POST', '/auth/signup', { name: 'Xavier', phone: '+91 98450 11111', password: 'another-pass', businessName: 'Copycat' });
+    check(r.status === 409, 'the same mobile cannot sign up twice', r);
     r = await call('POST', '/auth/login', { phone: '9845011111', password: 'wrong-pass' }, '');
     check(r.status === 401, 'wrong password -> 401');
     r = await call('POST', '/auth/login', { phone: { $gt: '' }, password: { $gt: '' } }, '');
@@ -238,7 +240,7 @@ const iso = (offsetDays) => {
     await call('PUT', `/sites/${S1}`, { contractValue: 50000 });
     r = await call('POST', '/receipts', { siteId: S1, amount: 20000, date: iso(-2), reference: 'RA bill 1' });
     check(r.status === 201, 'client payment recorded');
-    r = await call('POST', '/expenses', { siteId: S1, category: 'material', amount: 3000, date: iso(-1), vendor: 'Anchor' });
+    r = await call('POST', '/expenses', { siteId: S1, category: 'material', amount: 3000, date: iso(0), vendor: 'Anchor' });
     check(r.status === 201, 'site expense recorded');
     r = await call('POST', '/expenses', { category: 'rent', amount: 500, date: iso(-1) });
     check(r.status === 201 && !r.data.siteId, 'general expense recorded');
@@ -255,7 +257,7 @@ const iso = (offsetDays) => {
     r = await call('GET', `/reports/summary?from=${iso(-10)}&to=${iso(0)}`);
     check(r.data.totals.expenses === 3500 && r.data.totals.received === 20000 && r.data.totals.otHours === 5, 'report money + OT totals', r.data.totals);
     r = await call('GET', '/dashboard');
-    check(r.data.stats.clientDues === 30000 && r.data.charts.siteCost[0].expenses === 3000, 'dashboard dues + site cost split', r.data.stats);
+    check(r.data.stats.clientDues === 30000 && r.data.charts.siteCost[0].expenses === 3000, 'dashboard dues + site cost split', { dues: r.data.stats.clientDues, siteCost: r.data.charts.siteCost });
 
     console.log('Muster roll & slip');
     const md = new Date();
@@ -390,6 +392,95 @@ const iso = (offsetDays) => {
     check(r.status === 401, 'old number no longer signs in');
     r = await call('POST', '/auth/login', { phone: '9845022222', password: 'owner-reset-2' }, '');
     check(r.status === 200 && r.data.principal.role === 'owner', 'owner signs in with the new number');
+    adminToken = r.data.token;
+
+    console.log('Multi-tenant isolation');
+    r = await call('POST', '/auth/signup', { name: 'Other Owner', phone: '9845033333', password: 'other-pass-1', businessName: 'Other Electricals' }, '');
+    check(r.status === 201, 'a second business signs up', r.data);
+    const otherToken = r.data.token;
+    r = await call('GET', '/auth/me', null, otherToken);
+    check(r.data.organization.name === 'Other Electricals', 'second owner sees own business');
+    for (const url of ['/staff', '/sites', '/payments', '/advances', '/leaves', '/requests', '/payroll', '/expenses', '/performance']) {
+      r = await call('GET', url, null, otherToken);
+      check(r.status === 200 && Array.isArray(r.data) && r.data.length === 0, `new business starts empty: ${url}`, r.data);
+    }
+    r = await call('GET', '/notifications', null, otherToken);
+    check(r.data.items.length === 0, 'no notifications from another business');
+    const foreign = [
+      ['GET', `/staff/${B}`], ['PUT', `/staff/${B}`, { name: 'Hijack' }], ['DELETE', `/staff/${B}`], ['POST', `/staff/${B}/access`, { generate: true }],
+      ['GET', `/sites/${S1}`], ['PUT', `/sites/${S1}`, { name: 'Hijack' }], ['DELETE', `/sites/${S1}`], ['POST', `/sites/${S1}/assign`, { staffId: B }],
+      ['GET', `/payments/${PA}`], ['GET', `/payments/${PP}/proof`], ['PUT', `/payments/${PA}/mark-paid`, { paymentMode: 'cash' }], ['DELETE', `/payments/${PA}`],
+      ['PUT', `/leaves/${LV}`, { status: 'rejected' }], ['PUT', `/requests/${RQ}`, { status: 'rejected' }],
+      ['GET', `/attendance?siteId=${S1}&date=${iso(0)}`],
+    ];
+    for (const [method, url, body] of foreign) {
+      r = await call(method, url, body, otherToken);
+      check(r.status === 404, `another business gets 404: ${method} ${url.replace(/[0-9a-f]{24}/g, ':id')}`, r);
+    }
+    r = await call('GET', `/staff/${B}`);
+    check(r.status === 200 && r.data.name === 'Bala', "first business's staff untouched");
+    r = await call('POST', '/staff', { name: 'Same Number', phone: '9000000077', dailyWage: 500 }, otherToken);
+    check(r.status === 201, 'same worker number can be staff in two businesses');
+    r = await call('POST', `/staff/${r.data._id}/access`, { generate: true }, otherToken);
+    check(r.status === 409, "but a staff-app login number can't be reused across businesses");
+    r = await call('POST', '/staff', { name: 'Owner Number', phone: '9845033333', dailyWage: 500 }, otherToken);
+    r = await call('POST', `/staff/${r.data._id}/access`, { generate: true }, otherToken);
+    check(r.status === 409, "an owner's number can't become a staff login");
+
+    console.log('Platform portal');
+    const platformCli = (...args) =>
+      spawnSync(process.execPath, [require('path').join(__dirname, '../scripts/platform-admin.js'), ...args], { env: process.env, encoding: 'utf8' });
+    cli = platformCli('9845022222', 'plat-pass-01', 'Ops');
+    check(cli.status !== 0, "platform admin can't use a business login number");
+    cli = platformCli('9845099999', 'plat-pass-01', 'Ops');
+    check(cli.status === 0 && cli.stdout.includes('created'), 'platform admin created from the CLI', cli.stderr);
+    r = await call('POST', '/auth/login', { phone: '9845099999', password: 'plat-pass-01' }, '');
+    check(r.status === 200 && r.data.principal.role === 'platform', 'platform admin signs in');
+    const platToken = r.data.token;
+    r = await call('GET', '/auth/me', null, platToken);
+    check(r.status === 200 && r.data.organization === null, 'platform admin has no business');
+    r = await call('GET', '/staff', null, platToken);
+    check(r.status === 403, 'platform admin cannot open business data');
+    r = await call('GET', '/notifications', null, platToken);
+    check(r.status === 403, 'platform admin has no business notifications');
+    r = await call('GET', '/platform/organizations');
+    check(r.status === 403, 'business owner cannot open the platform portal');
+    r = await call('GET', '/platform/organizations', null, platToken);
+    const first = r.data.find?.((o) => o.name === 'Test Electricals');
+    check(r.status === 200 && r.data.length === 2 && first?.owner?.phone === '9845022222' && first.counts.staff >= 1, 'platform lists businesses with owner + counts', r.data);
+    const otherOrg = r.data.find((o) => o.name === 'Other Electricals');
+    r = await call('GET', '/platform/overview', null, platToken);
+    check(r.data.organizations === 2 && r.data.active === 2, 'platform overview totals', r.data);
+    r = await call('POST', '/platform/organizations', { businessName: 'Third Co', ownerName: 'Third Owner', phone: '9845044444' }, platToken);
+    check(r.status === 201 && r.data.password?.length >= 8, 'platform creates a business with an owner password', r.data);
+    r = await call('POST', '/auth/login', { phone: '9845044444', password: r.data.password }, '');
+    check(r.status === 200 && r.data.principal.role === 'owner', 'new owner signs in');
+    r = await call('POST', '/platform/organizations', { businessName: 'Dup', ownerName: 'Dup', phone: '9845033333' }, platToken);
+    check(r.status === 409, 'platform cannot reuse a login number');
+    r = await call('PUT', `/platform/organizations/${otherOrg.id}/status`, { status: 'suspended' }, platToken);
+    check(r.status === 200 && r.data.status === 'suspended', 'platform suspends a business');
+    r = await call('GET', '/staff', null, otherToken);
+    check(r.status === 403, 'suspended business is locked out');
+    r = await call('POST', '/auth/login', { phone: '9845033333', password: 'other-pass-1' }, '');
+    check(r.status === 403, 'suspended business cannot sign in');
+    r = await call('GET', '/staff');
+    check(r.status === 200, 'other businesses keep working');
+    await call('PUT', `/platform/organizations/${otherOrg.id}/status`, { status: 'active' }, platToken);
+    r = await call('GET', '/staff', null, otherToken);
+    check(r.status === 200, 'reactivated business works again');
+
+    console.log('Closed sign-up');
+    const closed = buildApp({ ...buildConfig(), signupEnabled: false, authRateLimit: 1000, rateLimitPerMinute: 10000 }).listen(0);
+    const closedBase = `http://127.0.0.1:${closed.address().port}/api`;
+    let res = await fetch(`${closedBase}/auth/status`);
+    check((await res.json()).signupEnabled === false, 'status reports sign-up closed');
+    res = await fetch(`${closedBase}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Late', phone: '9845055555', password: 'late-pass-1', businessName: 'Late Co' }),
+    });
+    check(res.status === 403, 'sign-up refused when closed');
+    closed.close();
   } catch (err) {
     failures += 1;
     console.error('Test crashed:', err);

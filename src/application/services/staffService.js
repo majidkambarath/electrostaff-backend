@@ -7,7 +7,11 @@ const STAFF_FIELDS = ['name', 'email', 'phone', 'address', 'role', 'dailyWage', 
 // Fields never sent to the office UI.
 const publicStaff = ({ passwordHash, tokenVersion, ...rest }) => rest;
 
-module.exports = ({ staffRepo, assignmentRepo, attendanceRepo, paymentRepo, advanceRepo, wageService, passwordHasher }) => {
+module.exports = ({ staffRepo, assignmentRepo, attendanceRepo, paymentRepo, advanceRepo, wageService, passwordHasher, authService }) => {
+  // A staff-app login number must be free on the whole platform (any business, any account kind).
+  const assertLoginFree = (phone, staffId) =>
+    authService.assertLoginPhoneFree(normalizePhone(phone), { staffId }, 'This number already signs in to ElectroStaff (maybe with another business). Use a different number for the staff app.');
+
   const assertUniquePhone = async (orgId, phone, excludeId) => {
     if (phone && (await staffRepo.phoneTaken(orgId, phone, excludeId))) {
       throw conflict('Another staff member already uses this phone number');
@@ -58,6 +62,10 @@ module.exports = ({ staffRepo, assignmentRepo, attendanceRepo, paymentRepo, adva
       const clearOt = splitOtRate(body);
       assertUpiId(body.upiId);
       await assertUniquePhone(orgId, body.phone, id);
+      if (body.phone) {
+        const current = await staffRepo.findById(orgId, id);
+        if (current?.portalEnabled && normalizePhone(current.phone) !== normalizePhone(body.phone)) await assertLoginFree(body.phone, id);
+      }
       const staff = await staffRepo.update(orgId, id, body, clearOt ? { otRate: 1 } : {});
       if (!staff) throw notFound('Staff');
       return publicStaff(staff);
@@ -67,18 +75,18 @@ module.exports = ({ staffRepo, assignmentRepo, attendanceRepo, paymentRepo, adva
     remove: async (orgId, id) => {
       const staff = await load(orgId, id);
       const [hasAttendance, hasPayments, hasAdvances] = await Promise.all([
-        attendanceRepo.existsForStaff(staff._id),
-        paymentRepo.existsForStaff(staff._id),
-        advanceRepo.existsForStaff(staff._id),
+        attendanceRepo.existsForStaff(orgId, staff._id),
+        paymentRepo.existsForStaff(orgId, staff._id),
+        advanceRepo.existsForStaff(orgId, staff._id),
       ]);
       if (hasAttendance || hasPayments || hasAdvances) {
-        await staffRepo.setStatus(staff._id, 'inactive');
-        await assignmentRepo.deactivateForStaff(staff._id);
+        await staffRepo.setStatus(orgId, staff._id, 'inactive');
+        await assignmentRepo.deactivateForStaff(orgId, staff._id);
         await staffRepo.disablePortal(orgId, staff._id);
         return { archived: true, message: 'Staff has work history, so they were marked inactive instead' };
       }
-      await assignmentRepo.removeForStaff(staff._id);
-      await staffRepo.remove(staff._id);
+      await assignmentRepo.removeForStaff(orgId, staff._id);
+      await staffRepo.remove(orgId, staff._id);
       return { archived: false, message: 'Staff removed' };
     },
 
@@ -90,6 +98,7 @@ module.exports = ({ staffRepo, assignmentRepo, attendanceRepo, paymentRepo, adva
       if (normalizePhone(staff.phone).length !== 10) throw invalid('Add a valid 10-digit mobile number first — it is their login');
       const plain = generate || !password ? generatePassword() : password;
       assertPassword(plain);
+      await assertLoginFree(staff.phone, staff._id);
       await staffRepo.enablePortal(orgId, staff._id, await passwordHasher.hash(plain), staff.phone);
       return { staffId: String(staff._id), name: staff.name, phone: staff.phone, password: plain };
     },

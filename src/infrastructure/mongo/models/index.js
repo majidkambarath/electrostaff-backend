@@ -1,6 +1,7 @@
 module.exports = {
   Organization: require('./Organization'),
   User: require('./User'),
+  PlatformAdmin: require('./PlatformAdmin'),
   Staff: require('./Staff'),
   Site: require('./Site'),
   SiteAssignment: require('./SiteAssignment'),

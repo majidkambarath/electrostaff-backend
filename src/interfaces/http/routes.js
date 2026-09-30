@@ -10,23 +10,36 @@ module.exports = (s) => {
   // ---- Public ------------------------------------------------------------
   api.get('/health', (req, res) => res.json({ status: 'ok', message: 'Electro Staff API running' }));
   api.get('/auth/status', handle(() => s.authService.status()));
-  api.post('/auth/setup', handle((req) => s.authService.setup(req.body), created));
+  api.post('/auth/signup', handle((req) => s.authService.signup(req.body), created));
   api.post('/auth/login', handle((req) => s.authService.login(req.body)));
 
   // ---- Any signed-in user -------------------------------------------------
   api.use(authenticate(s.authService));
   api.get('/auth/me', handle(async (req) => ({
     principal: req.principal,
-    organization: await s.orgService.get(req.orgId),
+    organization: req.orgId ? await s.orgService.get(req.orgId) : null,
   })));
   api.post('/auth/change-password', handle((req) => s.authService.changePassword(req.principal, req.body)));
+
+  // ---- Platform portal (SaaS operators) ------------------------------------
+  const platform = express.Router();
+  platform.use(requireRole('platform'));
+  platform.get('/overview', handle(() => s.platformService.overview()));
+  platform.get('/organizations', handle(() => s.platformService.list()));
+  platform.post('/organizations', handle((req) => s.platformService.create(req.body), created));
+  platform.get('/organizations/:id', handle((req) => s.platformService.get(req.params.id)));
+  platform.put('/organizations/:id/status', handle((req) => s.platformService.setStatus(req.params.id, req.body.status)));
+  api.use('/platform', platform);
+
+  // Everything below belongs to one organization; platform operators have none.
+  api.use(requireRole('owner', 'admin', 'staff'));
 
   api.get('/notifications', handle((req) => s.notificationService.list(req.principal)));
   api.get('/notifications/unread-count', handle((req) => s.notificationService.unreadCount(req.principal)));
   api.post('/notifications/read', handle((req) => s.notificationService.markRead(req.principal, req.body.ids)));
   api.get('/notifications/push-key', handle(() => s.notificationService.pushKey()));
   api.post('/notifications/subscribe', handle((req) => s.notificationService.subscribe(req.principal, req.body.subscription)));
-  api.post('/notifications/unsubscribe', handle((req) => s.notificationService.unsubscribe(req.body.endpoint)));
+  api.post('/notifications/unsubscribe', handle((req) => s.notificationService.unsubscribe(req.principal, req.body.endpoint)));
 
   // ---- Staff app (/me) ----------------------------------------------------
   const me = express.Router();
